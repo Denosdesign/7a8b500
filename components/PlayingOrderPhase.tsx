@@ -20,11 +20,11 @@ export const PlayingOrderPhase: React.FC<{
 
   useEffect(() => {
     // Initialize audio
-    rollSoundRef.current = new Audio('/assets/Round and Round.mp3'); // Rolling
+    rollSoundRef.current = new Audio('/7a8b500/assets/Round and Round.mp3'); // Rolling
     rollSoundRef.current.loop = true;
     rollSoundRef.current.volume = 0.5;
     
-    lockSoundRef.current = new Audio('/assets/Round and Round.mp3'); // Tick/Lock
+    lockSoundRef.current = new Audio('/7a8b500/assets/Round and Round.mp3'); // Tick/Lock
     lockSoundRef.current.volume = 0.6;
 
     // Start rolling immediately
