@@ -114,13 +114,13 @@ export const LotteryPhase: React.FC<{
 
   // Initialize Audio & Maps
   useEffect(() => {
-    tickAudioRef.current = new Audio('https://files.catbox.moe/eny100.mp3');
+    tickAudioRef.current = new Audio('/assets/Round and Round.mp3');
     tickAudioRef.current.volume = 0.3;
     
-    boomAudioRef.current = new Audio('https://files.catbox.moe/729555.mp3');
+    boomAudioRef.current = new Audio('/assets/Round and Round.mp3');
     boomAudioRef.current.volume = 0.6;
     
-    rollingAudioRef.current = new Audio('https://files.catbox.moe/d8ddtx.mp3');
+    rollingAudioRef.current = new Audio('/assets/Round and Round.mp3');
     rollingAudioRef.current.volume = 0.5;
     rollingAudioRef.current.loop = false;
 

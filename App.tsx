@@ -57,7 +57,7 @@ const App: React.FC = () => {
 
 
   useEffect(() => {
-    const audio = new Audio('https://files.catbox.moe/g21wp5.mp3');
+    const audio = new Audio('/assets/Round and Round.mp3');
     audio.loop = true;
     audio.volume = 0.6;
     audioRef.current = audio;

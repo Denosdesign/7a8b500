@@ -42,7 +42,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onInteract, onComplete
         {/* Logo - Static (No Float) */}
         <div className="mb-16 relative">
           <img 
-            src="https://files.catbox.moe/k57z08.png" 
+            src="/assets/logo.png" 
             alt="Squid Game Logo" 
             className="h-24 md:h-32 object-contain drop-shadow-[0_0_25px_rgba(237,27,118,0.6)]" 
           />
