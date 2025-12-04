@@ -40,7 +40,8 @@ export enum AppState {
   Setup = 'SETUP',
   Lottery = 'LOTTERY',
   Results = 'RESULTS',
-  Matchups = 'MATCHUPS'
+  Matchups = 'MATCHUPS',
+  Raffle = 'RAFFLE'
 }
 
 export interface MatchupPlayer {

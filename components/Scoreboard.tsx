@@ -1,10 +1,12 @@
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Team } from '../types';
 import { TEAM_CONFIG } from '../constants';
+import { getAverageScore, formatAverageScore } from '../utils';
 
 interface ScoreboardProps {
   teams: Team[];
+  condensed?: boolean;
 }
 
 // --- VISUAL ASSETS ---
@@ -83,11 +85,80 @@ const MoneyRain = () => {
   );
 };
 
-export const Scoreboard: React.FC<ScoreboardProps> = ({ teams }) => {
+const ScoreboardFXStyles = () => (
+  <style>
+    {`
+      @keyframes beam-pulse {
+        0%, 100% { opacity: 0.25; }
+        50% { opacity: 0.65; }
+      }
+      .leader-beam {
+        animation: beam-pulse 2.2s ease-in-out infinite;
+      }
+    `}
+  </style>
+);
+
+export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false }) => {
+  const [displayScores, setDisplayScores] = useState<Record<string, number>>(() => {
+    const initial: Record<string, number> = {};
+    teams.forEach((team) => {
+      initial[team.color] = getAverageScore(team);
+    });
+    return initial;
+  });
+  const latestDisplayRef = useRef(displayScores);
+
+  useEffect(() => {
+    latestDisplayRef.current = displayScores;
+  }, [displayScores]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || teams.length === 0) return;
+
+    const startValues: Record<string, number> = {};
+    const endValues: Record<string, number> = {};
+
+    teams.forEach((team) => {
+      const color = team.color;
+      const endValue = getAverageScore(team);
+      const startValue = latestDisplayRef.current[color] ?? endValue;
+      startValues[color] = startValue;
+      endValues[color] = endValue;
+    });
+
+    const duration = 1200;
+    const startTime = performance.now();
+    let raf = 0;
+
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      setDisplayScores((prev) => {
+        const next = { ...prev };
+        teams.forEach((team) => {
+          const color = team.color;
+          const start = startValues[color];
+          const end = endValues[color];
+          next[color] = start + (end - start) * eased;
+        });
+        return next;
+      });
+
+      if (progress < 1) {
+        raf = requestAnimationFrame(animate);
+      }
+    };
+
+    raf = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(raf);
+  }, [teams]);
+
   // --- SCALING LOGIC ---
-  const scores = teams.map(t => t.score || 0);
-  const currentMax = Math.max(...scores);
-  const currentMin = Math.min(...scores);
+  const scores = teams.map(team => getAverageScore(team));
+  const currentMax = scores.length ? Math.max(...scores) : 0;
+  const currentMin = scores.length ? Math.min(...scores) : 0;
   const spread = currentMax - currentMin;
 
   // Default: Scale from 0 to Max (at least 5)
@@ -110,9 +181,12 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams }) => {
   const visualRange = Math.max(scaleMax - scaleMin, 1);
 
   // Leader Logic
-  const sortedTeams = [...teams].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const sortedTeams = [...teams].sort((a, b) => getAverageScore(b) - getAverageScore(a));
   const leader = sortedTeams[0];
-  const isTie = sortedTeams.length > 1 && sortedTeams[0].score === sortedTeams[1].score;
+  const leaderAverage = leader ? getAverageScore(leader) : 0;
+  const isTie =
+    sortedTeams.length > 1 &&
+    Math.abs(leaderAverage - getAverageScore(sortedTeams[1])) < 0.001;
 
   // STATIC CASH PILE
   // A dense, aesthetically pleasing pile of money inside the sphere
@@ -159,12 +233,16 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams }) => {
     return items;
   }, []);
 
+  const containerClasses = `w-full ${condensed ? 'mb-4' : 'mb-12'} ${condensed ? '' : 'animate-fade-in'} relative`;
+
   return (
-    <div className="w-full mb-12 animate-fade-in relative">
+    <div className={containerClasses}>
+      <ScoreboardFXStyles />
       <MoneyRain />
       
       {/* PIGGY BANK HEADER */}
-      <div className="relative w-full flex flex-col items-center justify-center mb-16 pt-8 z-10">
+      {!condensed && (
+        <div className="relative w-full flex flex-col items-center justify-center mb-16 pt-8 z-10">
         
         {/* The Glass Pig */}
         <div className="relative w-72 h-72 md:w-96 md:h-96 animate-float-slow">
@@ -250,29 +328,58 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams }) => {
             </div>
             <div className="w-px h-6 bg-gray-700 -mt-1"></div>
         </div>
-      </div>
+        </div>
+      )}
 
       {/* TEAM BARS */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 px-4 h-[350px] items-end relative z-10 pt-10">
+      <div className={`grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 px-4 h-[350px] items-end relative z-10 ${condensed ? 'pt-2' : 'pt-10'}`}>
         {teams.map((team) => {
-           // Dynamic height calculation based on zoomed range
-           const rawPercent = ((team.score || 0) - scaleMin) / visualRange;
+           const averageScore = getAverageScore(team);
+           const animatedScore = displayScores[team.color] ?? averageScore;
+           const roundedAverage = Math.round(animatedScore);
+           const rawPercent = (animatedScore - scaleMin) / visualRange;
            const heightPercent = Math.min(Math.max(rawPercent * 100, 2), 100); // Clamp 2%-100%
+           const isLeader = leader && team.color === leader.color && !isTie;
            
            return (
-             <div key={team.color} className="flex flex-col h-full justify-end group">
-                <div className="text-center font-display text-2xl mb-2 transition-all" style={{ color: TEAM_CONFIG[team.color].hex, textShadow: `0 0 10px ${TEAM_CONFIG[team.color].hex}` }}>
-                   {team.score || 0}
-                </div>
-                <div className="w-full relative bg-gray-900/50 rounded-t-lg border-x border-t border-gray-700 overflow-hidden flex flex-col justify-end transition-all duration-1000" style={{ height: '100%' }}>
+             <div key={team.color} className="flex flex-col h-full justify-end group relative">
+               <div
+                 className="text-center font-display text-2xl mb-2 transition-all"
+                 style={{ color: TEAM_CONFIG[team.color].hex, textShadow: `0 0 18px ${TEAM_CONFIG[team.color].hex}` }}
+                 title={`Average: ${formatAverageScore(animatedScore)}`}
+               >
+                 {roundedAverage}
+               </div>
+               <div className="relative w-full h-full flex flex-col justify-end">
+                 {isLeader && (
+                   <>
+                     <div
+                       className="absolute inset-x-[-10px] bottom-0 top-auto h-full pointer-events-none opacity-40"
+                       style={{
+                         background: `radial-gradient(circle at 50% 100%, ${TEAM_CONFIG[team.color].hex}55, transparent 60%)`,
+                         filter: 'blur(20px)'
+                       }}
+                     />
+                     <div
+                       className="leader-beam absolute left-1/2 -translate-x-1/2 bottom-0 w-1.5 rounded-full"
+                       style={{
+                         height: `${heightPercent}%`,
+                         background: `linear-gradient(180deg, #fff, ${TEAM_CONFIG[team.color].hex})`,
+                         boxShadow: `0 0 15px ${TEAM_CONFIG[team.color].hex}`
+                       }}
+                     />
+                   </>
+                 )}
+                 <div className="w-full relative bg-gray-900/50 rounded-t-lg border-x border-t border-gray-700 overflow-hidden flex flex-col justify-end transition-all duration-1000" style={{ height: '100%' }}>
                    <div 
                       className="w-full transition-all duration-1000 ease-out relative"
                       style={{ height: `${heightPercent}%`, backgroundColor: TEAM_CONFIG[team.color].hex }}
                    >
-                      <div className="absolute inset-0 bg-white opacity-20 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
-                      <div className="absolute top-0 left-0 right-0 h-4 bg-white/30 blur-sm"></div>
+                      <div className="absolute inset-0 bg-white/12 bg-[linear-gradient(135deg,rgba(255,255,255,0.15)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.15)_50%,rgba(255,255,255,0.15)_75%,transparent_75%,transparent)] bg-[length:12px_12px]"></div>
+                      <div className="absolute top-0 left-0 right-0 h-4 bg-white/40 blur-sm"></div>
                    </div>
-                </div>
+                 </div>
+               </div>
                 <div className={`mt-3 py-2 text-center text-xs font-bold uppercase tracking-widest ${TEAM_CONFIG[team.color].bg} text-white rounded-b-sm`}>
                    {team.color.split(' ')[0]}
                 </div>

@@ -5,6 +5,9 @@ import { Player, Gender, Team } from '../types';
 import { Icons } from '../constants';
 import { Button } from './Button';
 import { downloadData } from '../utils';
+import logo from '../assets/logo.webp';
+import youngHee from '../assets/young-hee.webp';
+import cheolSu from '../assets/cheol-su.webp';
 
 export const InputPhase: React.FC<{
   players: Player[];
@@ -103,14 +106,14 @@ export const InputPhase: React.FC<{
       {/* Background Characters - Setup Phase Only */}
       <div className="fixed bottom-0 left-0 z-0 pointer-events-none hidden xl:block transition-opacity duration-1000 animate-fade-in">
          <img 
-            src="/7a8b500/assets/young-hee.webp" 
+            src={youngHee} 
             alt="Young-hee" 
             className="h-[80vh] max-w-[30vw] object-contain object-bottom drop-shadow-[0_0_30px_rgba(0,0,0,0.8)] opacity-90" 
          />
       </div>
       <div className="fixed bottom-0 right-0 z-0 pointer-events-none hidden xl:block transition-opacity duration-1000 animate-fade-in">
          <img 
-            src="/7a8b500/assets/cheol-su.webp" 
+            src={cheolSu} 
             alt="Cheol-su" 
             className="h-[80vh] max-w-[30vw] object-contain object-bottom drop-shadow-[0_0_30px_rgba(0,0,0,0.8)] opacity-90" 
          />
@@ -120,8 +123,8 @@ export const InputPhase: React.FC<{
         <div className="text-center space-y-4">
           <div className="flex justify-center w-full relative z-20 pointer-events-none">
             <img 
-                src="/7a8b500/assets/logo.png" 
-                alt="Squid Game Logo" 
+                src={logo} 
+                alt="Game Logo" 
                 className="h-16 md:h-24 object-contain drop-shadow-[0_0_15px_rgba(237,27,118,0.4)]" 
             />
           </div>

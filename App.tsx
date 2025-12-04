@@ -1,12 +1,16 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AppState, Player, Team, TeamColor, Matchup, MatchupPlayer } from './types';
+import { AppState, Player, Team, TeamColor, Matchup, MatchupPlayer, Gender } from './types';
 import { TEAM_CONFIG, Icons } from './constants';
 import { LandingPage } from './components/LandingPage';
 import { InputPhase } from './components/InputPhase';
 import { LotteryPhase } from './components/LotteryPhase';
 import { ResultsPhase } from './components/ResultsPhase';
 import { PlayingOrderPhase } from './components/PlayingOrderPhase';
+import { RaffleSystem } from './components/RaffleSystem';
+import startTheme from './assets/start_theme.mp3';
+import scoreboardMusic from './assets/scoreboard.mp3';
+import bgMusic from './assets/background.mp3';
 
 const LOCAL_STORAGE_TEAMS = 'squid-teams-data';
 const LOCAL_STORAGE_MATCHUPS = 'squid-matchups-data';
@@ -57,9 +61,9 @@ const App: React.FC = () => {
 
 
   useEffect(() => {
-    const audio = new Audio('/7a8b500/assets/Round and Round.mp3');
+    const audio = new Audio();
     audio.loop = true;
-    audio.volume = 0.6;
+    audio.volume = 0.4;
     audioRef.current = audio;
 
     return () => {
@@ -68,11 +72,35 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Switch audio based on app state
+  useEffect(() => {
+    if (!audioRef.current) return;
+
+    let trackToPlay = startTheme; // Default to start_theme
+    
+    if (appState === AppState.Results) {
+      trackToPlay = scoreboardMusic;
+    } else if (appState === AppState.Matchups) {
+      trackToPlay = bgMusic;
+    } else if (appState === AppState.Lottery) {
+      trackToPlay = bgMusic;
+    } else if (appState === AppState.Raffle) {
+      trackToPlay = bgMusic;
+    }
+
+    // Only change track if it's different - prevents stopping/restarting same track
+    if (audioRef.current.src !== trackToPlay) {
+      audioRef.current.src = trackToPlay;
+      if (!isMuted) {
+        audioRef.current.play().catch(() => {});
+      }
+    }
+  }, [appState, isMuted]);
+
   // Handler: Start audio immediately on user interaction
   const handleInteraction = async () => {
     if (audioRef.current) {
       try {
-        await audioRef.current.play();
         setIsMuted(false);
       } catch (err) {
         console.warn("Audio playback failed:", err);
@@ -107,26 +135,73 @@ const App: React.FC = () => {
   
   // Helper to generate matchups
   const generateMatchups = (currentTeams: Team[]): Matchup[] => {
-    const pools = currentTeams.map(t => ({
-      color: t.color,
-      members: [...t.members].sort(() => Math.random() - 0.5)
-    }));
+    // Separate teams into male and female members
+    const pools = currentTeams.map(t => {
+      const members = [...t.members];
+      const males = members.filter(m => m.gender === Gender.Male).sort(() => Math.random() - 0.5);
+      const females = members.filter(m => m.gender === Gender.Female).sort(() => Math.random() - 0.5);
+      const nonBinary = members.filter(m => m.gender === Gender.NonBinary).sort(() => Math.random() - 0.5);
+      
+      return { color: t.color, males, females, nonBinary };
+    });
 
-    const max = Math.max(...pools.map(p => p.members.length));
-    const generated: Matchup[] = [];
+    // Calculate max rows needed for each gender
+    const maxMales = Math.max(...pools.map(p => p.males.length), 0);
+    const maxFemales = Math.max(...pools.map(p => p.females.length), 0);
+    const maxNonBinary = Math.max(...pools.map(p => p.nonBinary.length), 0);
     
-    for (let i = 0; i < max; i++) {
+    const generated: Matchup[] = [];
+    let maleRowIndex = 0;
+    let femaleRowIndex = 0;
+    let nonBinaryRowIndex = 0;
+    let isMaleRow = true;
+    
+    // Alternate between male and female rows
+    while (maleRowIndex < maxMales || femaleRowIndex < maxFemales || nonBinaryRowIndex < maxNonBinary) {
       const rowPlayers: MatchupPlayer[] = [];
-      Object.values(TeamColor).forEach(color => {
-        const pool = pools.find(p => p.color === color);
-        if (pool && pool.members[i]) {
-          rowPlayers.push({ color, player: pool.members[i] });
-        } else {
-          rowPlayers.push({ color, player: null });
-        }
-      });
-      generated.push({ id: i + 1, players: rowPlayers });
+      
+      if (isMaleRow && maleRowIndex < maxMales) {
+        // Fill row with male players
+        Object.values(TeamColor).forEach(color => {
+          const pool = pools.find(p => p.color === color);
+          if (pool && pool.males[maleRowIndex]) {
+            rowPlayers.push({ color, player: pool.males[maleRowIndex] });
+          } else {
+            rowPlayers.push({ color, player: null });
+          }
+        });
+        maleRowIndex++;
+      } else if (!isMaleRow && femaleRowIndex < maxFemales) {
+        // Fill row with female players
+        Object.values(TeamColor).forEach(color => {
+          const pool = pools.find(p => p.color === color);
+          if (pool && pool.females[femaleRowIndex]) {
+            rowPlayers.push({ color, player: pool.females[femaleRowIndex] });
+          } else {
+            rowPlayers.push({ color, player: null });
+          }
+        });
+        femaleRowIndex++;
+      } else if (nonBinaryRowIndex < maxNonBinary) {
+        // Fill row with non-binary players
+        Object.values(TeamColor).forEach(color => {
+          const pool = pools.find(p => p.color === color);
+          if (pool && pool.nonBinary[nonBinaryRowIndex]) {
+            rowPlayers.push({ color, player: pool.nonBinary[nonBinaryRowIndex] });
+          } else {
+            rowPlayers.push({ color, player: null });
+          }
+        });
+        nonBinaryRowIndex++;
+      }
+      
+      if (rowPlayers.some(p => p.player !== null)) {
+        generated.push({ id: generated.length + 1, players: rowPlayers });
+      }
+      
+      isMaleRow = !isMaleRow;
     }
+    
     return generated;
   };
 
@@ -175,7 +250,22 @@ const App: React.FC = () => {
     }
   };
 
+  const handleBackToHome = () => {
+    if (appState === AppState.Landing) return;
+    if (window.confirm("Return to home? All progress will be lost.")) {
+      resetApp();
+    }
+  };
+
   const handleProceedToScoreboard = () => {
+    setAppState(AppState.Results);
+  };
+
+  const handleOpenRaffle = () => {
+    setAppState(AppState.Raffle);
+  };
+
+  const handleCloseRaffle = () => {
     setAppState(AppState.Results);
   };
 
@@ -223,12 +313,16 @@ const App: React.FC = () => {
 
       <main className={`relative z-10 flex flex-col flex-1 min-h-screen transition-opacity duration-1000 ${appState === AppState.Landing ? 'opacity-0' : 'opacity-100'}`}>
         <header className="w-full p-4 md:p-6 flex justify-between items-center relative z-20 shrink-0">
-          {/* Left: Icons */}
-          <div className="flex gap-2 justify-start opacity-50 hover:opacity-100 transition-opacity">
+          {/* Left: Icons - Clickable to go back home */}
+          <button 
+            onClick={handleBackToHome}
+            disabled={appState === AppState.Landing}
+            className="flex gap-2 justify-start opacity-50 hover:opacity-100 transition-opacity disabled:cursor-default disabled:hover:opacity-50"
+          >
             <Icons.Circle className="w-5 h-5 md:w-6 md:h-6" />
             <Icons.Triangle className="w-5 h-5 md:w-6 md:h-6" />
             <Icons.Square className="w-5 h-5 md:w-6 md:h-6" />
-          </div>
+          </button>
           
           {/* Right: Audio Control & Version */}
           <div className="flex items-center gap-6 opacity-80 hover:opacity-100 transition-opacity">
@@ -278,9 +372,13 @@ const App: React.FC = () => {
               matchups={matchups}
               onReset={resetApp} 
               onViewMatchups={handleViewMatchups}
+              onOpenRaffle={handleOpenRaffle}
               updateTeamScore={updateTeamScore}
               updatePlayerScore={updatePlayerScore}
             />
+          )}
+          {appState === AppState.Raffle && (
+            <RaffleSystem teams={teams} onBack={handleCloseRaffle} />
           )}
         </div>
       </main>

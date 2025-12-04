@@ -4,6 +4,7 @@ import { Team, TeamColor, Matchup } from '../types';
 import { TEAM_CONFIG } from '../constants';
 import { Button } from './Button';
 import { downloadData } from '../utils';
+import rollingSound from '../assets/Random.mp3';
 
 export const PlayingOrderPhase: React.FC<{ 
   teams: Team[]; 
@@ -20,11 +21,11 @@ export const PlayingOrderPhase: React.FC<{
 
   useEffect(() => {
     // Initialize audio
-    rollSoundRef.current = new Audio('/7a8b500/assets/Round and Round.mp3'); // Rolling
+    rollSoundRef.current = new Audio(rollingSound); // Rolling
     rollSoundRef.current.loop = true;
     rollSoundRef.current.volume = 0.5;
     
-    lockSoundRef.current = new Audio('/7a8b500/assets/Round and Round.mp3'); // Tick/Lock
+    lockSoundRef.current = new Audio(rollingSound); // Tick/Lock
     lockSoundRef.current.volume = 0.6;
 
     // Start rolling immediately
@@ -33,20 +34,29 @@ export const PlayingOrderPhase: React.FC<{
     // Animation Sequence
     // Delay start of locking to let it roll for a bit
     const max = matchups.length;
+    let isAnimating = true;
+    
     const startDelay = setTimeout(() => {
       const interval = setInterval(() => {
         setRevealIndex(prev => {
            const next = prev + 1;
            if (next >= max) {
              clearInterval(interval);
+             isAnimating = false;
              if (rollSoundRef.current) {
                  rollSoundRef.current.pause();
                  rollSoundRef.current.currentTime = 0;
              }
            }
-           if (lockSoundRef.current) {
+           // Only play lock sound if still animating
+           if (isAnimating && lockSoundRef.current && !lockSoundRef.current.paused && lockSoundRef.current.currentTime > 0) {
+             // Don't play if already playing
+             return next;
+           }
+           if (isAnimating && lockSoundRef.current) {
              lockSoundRef.current.currentTime = 0;
-             lockSoundRef.current.play().catch(()=>{});
+             const playPromise = lockSoundRef.current.play();
+             playPromise.catch(() => {});
            }
            return next;
         });
@@ -55,7 +65,9 @@ export const PlayingOrderPhase: React.FC<{
 
     return () => {
         clearTimeout(startDelay);
+        isAnimating = false;
         if (rollSoundRef.current) rollSoundRef.current.pause();
+        if (lockSoundRef.current) lockSoundRef.current.pause();
     };
   }, [matchups.length, matchups]); // Trigger on matchups change
 
@@ -140,12 +152,13 @@ export const PlayingOrderPhase: React.FC<{
                             {Object.values(TeamColor).map(color => {
                                 const playerObj = matchup.players.find(p => p.color === color);
                                 const playerName = playerObj?.player?.name;
+                                const playerGender = playerObj?.player?.gender;
                                 
                                 return (
                                     <div 
                                         key={color} 
                                         className={`
-                                            p-3 flex items-center justify-center border-r border-gray-800 last:border-0 min-h-[60px] relative overflow-hidden
+                                            p-3 flex flex-col items-center justify-center border-r border-gray-800 last:border-0 min-h-[60px] relative overflow-hidden
                                             ${isRolling ? 'text-gray-500 blur-[0.5px]' : 'text-white'}
                                         `}
                                     >
@@ -155,9 +168,14 @@ export const PlayingOrderPhase: React.FC<{
                                             </span>
                                         ) : (
                                             playerName ? (
-                                                <span className={`font-display font-bold text-sm md:text-base tracking-tight truncate w-full text-center ${isJustLocked ? 'animate-scale-in text-squid-pink' : ''}`}>
-                                                    {playerName}
-                                                </span>
+                                                <>
+                                                    <span className={`font-display font-bold text-sm md:text-base tracking-tight truncate w-full text-center ${isJustLocked ? 'animate-scale-in text-squid-pink' : ''}`}>
+                                                        {playerName}
+                                                    </span>
+                                                    <span className={`text-[10px] font-mono mt-1 px-1.5 py-0.5 rounded-sm ${playerGender === 'M' ? 'bg-blue-900/50 text-blue-300' : playerGender === 'F' ? 'bg-pink-900/50 text-pink-300' : 'bg-purple-900/50 text-purple-300'}`}>
+                                                        {playerGender === 'M' ? '♂ MALE' : playerGender === 'F' ? '♀ FEMALE' : '⊕ NB'}
+                                                    </span>
+                                                </>
                                             ) : (
                                                 <span className="text-gray-700 font-mono text-xs">---</span>
                                             )
@@ -178,7 +196,6 @@ export const PlayingOrderPhase: React.FC<{
         
         {/* Footer info */}
         <div className="mt-8 text-center font-mono text-gray-500 text-xs">
-             SYSTEM MESSAGE: MATCHUPS GENERATED RANDOMLY. NO REPEATS PER COLOR GROUP.
         </div>
     </div>
   );

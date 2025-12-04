@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Icons } from '../constants';
+import logo from '../assets/logo.webp';
 
 interface LandingPageProps {
   onInteract: () => void;
@@ -42,8 +43,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onInteract, onComplete
         {/* Logo - Static (No Float) */}
         <div className="mb-16 relative">
           <img 
-            src="/7a8b500/assets/logo.png" 
-            alt="Squid Game Logo" 
+            src={logo} 
+            alt="Game Logo" 
             className="h-24 md:h-32 object-contain drop-shadow-[0_0_25px_rgba(237,27,118,0.6)]" 
           />
         </div>
@@ -86,7 +87,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onInteract, onComplete
         {/* CTA Text */}
         <div className={`mt-20 text-center transition-all duration-500 ${clicked ? 'opacity-0 translate-y-10' : 'opacity-100'}`}>
           <p className="font-mono text-[10px] md:text-xs text-squid-pink tracking-[0.6em] uppercase animate-pulse">
-            Start
+            You're Invited
           </p>
         </div>
       </div>
