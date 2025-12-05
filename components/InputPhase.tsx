@@ -19,13 +19,34 @@ export const InputPhase: React.FC<{
   const [singleGender, setSingleGender] = useState<Gender>(Gender.Male);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const parseFirstMatchFlag = (raw: unknown): boolean => {
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'number') return raw === 0;
+    if (typeof raw === 'string') {
+      const normalized = raw.replace(/["']/g, '').trim().toLowerCase();
+      if (!normalized) return false;
+
+      if (normalized === 'o' || normalized === 'zero') return true;
+
+      const numericValue = Number(normalized);
+      if (!Number.isNaN(numericValue)) {
+        return numericValue === 0;
+      }
+
+      if (['true', 'yes', 'y', 'first', 'start'].includes(normalized)) return true;
+      if (['false', 'no', 'n'].includes(normalized)) return false;
+    }
+    return false;
+  };
+
   const handleAddSingle = () => {
     if (!singleName.trim()) return;
     const newPlayer: Player = {
       id: uuidv4(),
       name: singleName.trim(),
       gender: singleGender,
-      score: 0
+      score: 0,
+      forceFirstMatch: false
     };
     setPlayers([...players, newPlayer]);
     setSingleName('');
@@ -63,7 +84,8 @@ export const InputPhase: React.FC<{
              id: p.id || uuidv4(),
              name: p.name,
              gender: p.gender || Gender.NonBinary,
-             score: p.score || 0
+             score: p.score || 0,
+             forceFirstMatch: parseFirstMatchFlag(p.forceFirstMatch)
            }));
            setPlayers(prev => [...prev, ...importedPlayers]);
            return;
@@ -75,7 +97,8 @@ export const InputPhase: React.FC<{
           const csvPlayers: Player[] = [];
           
           lines.forEach(line => {
-             const [name, genderRaw] = line.split(',').map(s => s.trim());
+             const [nameRaw, genderRaw, markerRaw] = line.split(',').map(s => s.trim());
+             const name = nameRaw;
              if (name) {
                let gender = Gender.NonBinary;
                if (genderRaw) {
@@ -83,7 +106,8 @@ export const InputPhase: React.FC<{
                  if (g.startsWith('M')) gender = Gender.Male;
                  else if (g.startsWith('F')) gender = Gender.Female;
                }
-               csvPlayers.push({ id: uuidv4(), name, gender, score: 0 });
+               const forceFirstMatch = parseFirstMatchFlag(markerRaw);
+               csvPlayers.push({ id: uuidv4(), name, gender, score: 0, forceFirstMatch });
              }
           });
           

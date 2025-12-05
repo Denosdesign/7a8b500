@@ -10,6 +10,7 @@ export interface Player {
   name: string;
   gender: Gender;
   score: number;
+  forceFirstMatch?: boolean;
 }
 
 export interface ParsedPlayerResponse {

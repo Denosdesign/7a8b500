@@ -5,6 +5,89 @@ import { Button } from './Button';
 
 const HUD_TOP_OFFSET = 80; // keeps HUD from covering the floating logo layer
 
+const TEAM_COLORS_LIST: TeamColor[] = Object.values(TeamColor);
+const GENDER_KEYS: Gender[] = [Gender.Male, Gender.Female, Gender.NonBinary];
+
+const createGenderCount = (): Record<Gender, number> => ({
+    [Gender.Male]: 0,
+    [Gender.Female]: 0,
+    [Gender.NonBinary]: 0
+});
+
+const rotateArray = <T,>(arr: T[], offset: number): T[] => {
+    if (arr.length === 0) return [];
+    const normalized = ((offset % arr.length) + arr.length) % arr.length;
+    return [...arr.slice(normalized), ...arr.slice(0, normalized)];
+};
+
+const shufflePlayers = (arr: Player[]): Player[] => [...arr].sort(() => Math.random() - 0.5);
+
+const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender, number>> => {
+    const template = TEAM_COLORS_LIST.reduce((acc, color) => {
+        acc[color] = createGenderCount();
+        return acc;
+    }, {} as Record<TeamColor, Record<Gender, number>>);
+
+    const colorCount = TEAM_COLORS_LIST.length;
+    if (colorCount === 0) return template;
+
+    const seed = players.reduce((acc, player, idx) => {
+        const firstCharCode = player.name?.charCodeAt(0) ?? 0;
+        return acc + firstCharCode + idx;
+    }, 0);
+    const distributionOrder = rotateArray(TEAM_COLORS_LIST, seed % colorCount);
+
+    const genderTotals = players.reduce((acc, player) => {
+        acc[player.gender] = (acc[player.gender] ?? 0) + 1;
+        return acc;
+    }, createGenderCount());
+
+    GENDER_KEYS.forEach(gender => {
+        const total = genderTotals[gender];
+        if (total === 0) {
+            distributionOrder.forEach(color => {
+                template[color][gender] = 0;
+            });
+            return;
+        }
+
+        const base = Math.floor(total / colorCount);
+        const remainder = total % colorCount;
+        distributionOrder.forEach((color, idx) => {
+            template[color][gender] = base + (idx < remainder ? 1 : 0);
+        });
+    });
+
+    return template;
+};
+
+const buildForcedTargets = (players: Player[]): Record<TeamColor, number> => {
+    const template = TEAM_COLORS_LIST.reduce((acc, color) => {
+        acc[color] = 0;
+        return acc;
+    }, {} as Record<TeamColor, number>);
+
+    const forcedPlayers = players.filter(p => p.forceFirstMatch);
+    const totalForced = forcedPlayers.length;
+    const colorCount = TEAM_COLORS_LIST.length;
+    if (totalForced === 0 || colorCount === 0) return template;
+
+    const seed = forcedPlayers.reduce((acc, player, idx) => {
+        const code = player.name?.charCodeAt(0) ?? 0;
+        return acc + code + idx;
+    }, 0);
+    const distributionOrder = rotateArray(TEAM_COLORS_LIST, seed % colorCount);
+
+    const base = Math.floor(totalForced / colorCount);
+    const remainder = totalForced % colorCount;
+
+    distributionOrder.forEach((color, idx) => {
+        template[color] = base + (idx < remainder ? 1 : 0);
+    });
+
+    return template;
+};
+
 export const LotteryPhase: React.FC<{
   players: Player[]; // All registered players
   initialTeams: Team[];
@@ -20,13 +103,22 @@ export const LotteryPhase: React.FC<{
 
   // Animation State
   const [currentTeamColor, setCurrentTeamColor] = useState<TeamColor | null>(null);
-  const [teamQueue, setTeamQueue] = useState<TeamColor[]>(Object.values(TeamColor));
-  const [phase, setPhase] = useState<'IDLE' | 'DRAFTING' | 'SUMMARY'>('IDLE');
+    const [teamQueue, setTeamQueue] = useState<TeamColor[]>(TEAM_COLORS_LIST);
+  const [phase, setPhase] = useState<'IDLE' | 'FIRST_TEAM_INTRO' | 'DRAFTING' | 'SUMMARY' | 'NEXT_TEAM_PREVIEW' | 'FINAL_RECAP'>('IDLE');
+  const [introTeamColor, setIntroTeamColor] = useState<TeamColor | null>(null);
   
   // Drafting Logic
   const [draftQueue, setDraftQueue] = useState<Player[]>([]);
   const [decoyIds, setDecoyIds] = useState<string[]>([]);
   const [lockedPlayers, setLockedPlayers] = useState<Player[]>([]);
+  
+  // New: Slam animation & preview states
+  const [slamPlayerId, setSlamPlayerId] = useState<string | null>(null);
+  const [nextTeamColor, setNextTeamColor] = useState<TeamColor | null>(null);
+  const [completedTeams, setCompletedTeams] = useState<Team[]>([]);
+
+    const genderTargets = useMemo(() => buildGenderTargets(players), [players]);
+    const forcedTargets = useMemo(() => buildForcedTargets(players), [players]);
   
   // Audio Refs
   const tickAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -57,37 +149,65 @@ export const LotteryPhase: React.FC<{
   }, [players, initialTeams]);
 
   // --- Logic: Pick Players ---
-  const pickBatch = (pool: Player[], color: TeamColor): Player[] => {
-    const males = pool.filter(p => p.gender === Gender.Male);
-    const females = pool.filter(p => p.gender === Gender.Female);
-    const nbs = pool.filter(p => p.gender === Gender.NonBinary);
-    
-    // Remaining teams count
-    const teamsLeft = Object.values(TeamColor).length - Object.values(TeamColor).indexOf(color);
-    
-    const targetM = Math.ceil(males.length / teamsLeft);
-    const targetF = Math.ceil(females.length / teamsLeft);
-    const targetNB = Math.ceil(nbs.length / teamsLeft);
+    const pickBatch = (pool: Player[], color: TeamColor, snapshotTeams: Team[]): Player[] => {
+        const targetByGender = genderTargets[color] || createGenderCount();
+        const desiredTeamSize = (Object.values(targetByGender) as number[]).reduce((sum, count) => sum + count, 0);
+        const currentTeam = snapshotTeams.find(t => t.color === color);
+        const assignedMembers = currentTeam?.members ?? [];
 
-    const shuffle = (arr: Player[]) => [...arr].sort(() => Math.random() - 0.5);
-    
-    let batch = [
-      ...shuffle(males).slice(0, targetM),
-      ...shuffle(females).slice(0, targetF),
-      ...shuffle(nbs).slice(0, targetNB)
-    ];
-    
-    // Fill remainder
-    if (batch.length < Math.floor(pool.length / teamsLeft)) {
-       const usedIds = new Set(batch.map(p => p.id));
-       const remainder = shuffle(pool.filter(p => !usedIds.has(p.id)));
-       const needed = Math.floor(pool.length / teamsLeft) - batch.length;
-       batch = [...batch, ...remainder.slice(0, needed)];
-    }
-    
-    if (teamsLeft === 1) return pool;
-    return batch;
-  };
+        if (desiredTeamSize <= assignedMembers.length) {
+            return [];
+        }
+
+        const assignedCounts = assignedMembers.reduce((acc, member) => {
+            acc[member.gender] = (acc[member.gender] ?? 0) + 1;
+            return acc;
+        }, createGenderCount());
+
+        const assignedForced = assignedMembers.filter(m => m.forceFirstMatch).length;
+        const forcedTarget = forcedTargets[color] ?? 0;
+        const forcedNeeded = Math.max(forcedTarget - assignedForced, 0);
+
+        const usedIds = new Set<string>();
+        let batch: Player[] = [];
+
+        if (forcedNeeded > 0) {
+            const forcedPool = pool.filter(p => p.forceFirstMatch && !usedIds.has(p.id));
+            const forcedPicks = shufflePlayers(forcedPool).slice(0, forcedNeeded);
+            forcedPicks.forEach(player => {
+                usedIds.add(player.id);
+                assignedCounts[player.gender] = (assignedCounts[player.gender] ?? 0) + 1;
+            });
+            batch = batch.concat(forcedPicks);
+        }
+
+        const neededCounts = GENDER_KEYS.reduce((acc, gender) => {
+            acc[gender] = Math.max((targetByGender[gender] ?? 0) - (assignedCounts[gender] ?? 0), 0);
+            return acc;
+        }, createGenderCount());
+
+        GENDER_KEYS.forEach(gender => {
+            const needed = neededCounts[gender];
+            if (needed <= 0) return;
+            const available = pool.filter(p => p.gender === gender && !usedIds.has(p.id) && !p.forceFirstMatch);
+            const picks = shufflePlayers(available).slice(0, needed);
+            picks.forEach(player => {
+                usedIds.add(player.id);
+                assignedCounts[gender] = (assignedCounts[gender] ?? 0) + 1;
+            });
+            batch = batch.concat(picks);
+        });
+
+        const teamCurrentSize = assignedMembers.length;
+        const targetBatchSize = Math.max(desiredTeamSize - teamCurrentSize, 0);
+
+        if (batch.length < targetBatchSize) {
+            const remainder = shufflePlayers(pool.filter(p => !usedIds.has(p.id) && !p.forceFirstMatch));
+            batch = batch.concat(remainder.slice(0, targetBatchSize - batch.length));
+        }
+
+        return batch;
+    };
 
   const startNextTeam = () => {
     if (unassignedPlayers.length === 0) {
@@ -99,6 +219,17 @@ export const LotteryPhase: React.FC<{
       onComplete(teams);
       return;
     }
+    
+    // Check if this is the FIRST team (all teams are empty)
+    const allTeamsEmpty = teams.every(t => t.members.length === 0);
+    
+    if (allTeamsEmpty) {
+      // Show cinematic intro for first team, then auto-start
+      setIntroTeamColor(nextColor);
+      setPhase('FIRST_TEAM_INTRO');
+      return;
+    }
+    
     setCurrentTeamColor(nextColor);
 
     // Check if this is the last team (only 1 remaining empty team including this one)
@@ -127,12 +258,40 @@ export const LotteryPhase: React.FC<{
        }
     } else {
        // --- NORMAL TEAM LOGIC: Rolling Animation ---
-       const winners = pickBatch(unassignedPlayers, nextColor);
-       setDraftQueue(winners);
-       setLockedPlayers([]);
-       setPhase('DRAFTING');
+    const winners = pickBatch(unassignedPlayers, nextColor, teams);
+             if (winners.length === 0) {
+                 setDraftQueue([]);
+                 setLockedPlayers([]);
+                 setPhase('SUMMARY');
+                 return;
+             }
+             setDraftQueue(winners);
+             setLockedPlayers([]);
+             setPhase('DRAFTING');
     }
   };
+  
+  // Auto-transition from FIRST_TEAM_INTRO to DRAFTING
+  useEffect(() => {
+    if (phase === 'FIRST_TEAM_INTRO' && introTeamColor) {
+      const timer = setTimeout(() => {
+        setCurrentTeamColor(introTeamColor);
+        const winners = pickBatch(unassignedPlayers, introTeamColor, teams);
+        if (winners.length === 0) {
+          setDraftQueue([]);
+          setLockedPlayers([]);
+          setPhase('SUMMARY');
+          return;
+        }
+        setDraftQueue(winners);
+        setLockedPlayers([]);
+        setIntroTeamColor(null);
+        setPhase('DRAFTING');
+      }, 3500); // 3.5 seconds for cinematic reveal
+      
+      return () => clearTimeout(timer);
+    }
+  }, [phase, introTeamColor, unassignedPlayers, teams]);
 
   // --- Animation Loop ---
   useEffect(() => {
@@ -168,18 +327,20 @@ export const LotteryPhase: React.FC<{
               const lockedIds = new Set(draftQueue.slice(0, currentLockIndex).map(p => p.id));
               const available = unassignedPlayers.filter(p => !lockedIds.has(p.id));
               
+              // Randomize how many to show (creates more dynamic flickering)
+              const flickerCount = Math.max(1, Math.floor(neededDecoys * (0.5 + Math.random() * 0.5)));
               const shuffled = [...available].sort(() => Math.random() - 0.5);
-              const nextDecoys = shuffled.slice(0, neededDecoys).map(p => p.id);
+              const nextDecoys = shuffled.slice(0, flickerCount).map(p => p.id);
               
               setDecoyIds(nextDecoys);
 
               if (!isMuted && tickAudioRef.current) {
                  const clone = tickAudioRef.current.cloneNode() as HTMLAudioElement;
-                 clone.playbackRate = 1.0 + Math.random();
-                 clone.volume = 0.2;
+                 clone.playbackRate = 0.8 + Math.random() * 0.6;
+                 clone.volume = 0.15;
                  clone.play().catch(() => {});
               }
-          }, 100); // Fast flicker
+          }, 100); // Slightly faster for more excitement
 
           // SEQUENCE LOGIC
           
@@ -189,7 +350,7 @@ export const LotteryPhase: React.FC<{
                 if(!rollingAudioRef.current) return resolve();
                 
                 // Fallback timeout in case audio is blocked or fails
-                const fallback = setTimeout(resolve, 4500);
+                const fallback = setTimeout(resolve, 1500);
                 
                 rollingAudioRef.current.onended = () => {
                    clearTimeout(fallback);
@@ -204,7 +365,7 @@ export const LotteryPhase: React.FC<{
              });
           } else {
              // Fallback wait if muted
-             await new Promise(r => setTimeout(r, 2500));
+             await new Promise(r => setTimeout(r, 800));
           }
 
           // 2. Lock players one by one
@@ -212,10 +373,33 @@ export const LotteryPhase: React.FC<{
               if (isCancelled) break;
 
               const winner = draftQueue[currentLockIndex];
+              const remainingAfterThis = totalNeeded - currentLockIndex;
+              
+              // SUSPENSE PAUSE for final 2 players
+              if (remainingAfterThis <= 2 && totalNeeded > 2) {
+                // Stop the chaos flickering momentarily
+                setDecoyIds([]);
+                
+                // Dramatic pause - longer for the very last player
+                const suspenseDuration = remainingAfterThis === 1 ? 1200 : 800;
+                await new Promise(r => setTimeout(r, suspenseDuration));
+                
+                // Resume chaos briefly before lock
+                if (remainingAfterThis > 1) {
+                  const lockedIds = new Set(draftQueue.slice(0, currentLockIndex).map(p => p.id));
+                  const available = unassignedPlayers.filter(p => !lockedIds.has(p.id));
+                  const shuffled = [...available].sort(() => Math.random() - 0.5);
+                  setDecoyIds(shuffled.slice(0, remainingAfterThis).map(p => p.id));
+                  await new Promise(r => setTimeout(r, 300));
+                }
+              }
               
               // Lock the winner
               setLockedPlayers(prev => [...prev, winner]);
               setAssignedMap(prev => ({ ...prev, [winner.id]: currentTeamColor! }));
+              
+              // Trigger slam animation
+              setSlamPlayerId(winner.id);
               
               // Play Boom
               if (!isMuted && boomAudioRef.current) {
@@ -223,12 +407,15 @@ export const LotteryPhase: React.FC<{
                 boomAudioRef.current.play().catch(() => {});
               }
               
+              // Clear slam after animation
+              setTimeout(() => setSlamPlayerId(null), 400);
+              
               // Increment index before waiting
               currentLockIndex++;
 
-              // DYNAMIC DELAY (Speed Curve)
+              // DYNAMIC DELAY (Speed Curve) - Faster!
               const pctComplete = currentLockIndex / totalNeeded;
-              const delay = Math.max(200, 1500 * (1 - Math.pow(pctComplete, 1.5)));
+              const delay = Math.max(80, 500 * (1 - Math.pow(pctComplete, 1.5)));
               
               await new Promise(r => setTimeout(r, delay)); 
           }
@@ -237,7 +424,7 @@ export const LotteryPhase: React.FC<{
           setDecoyIds([]); // Clear any flashing
           
           if (!isCancelled) {
-              await new Promise(r => setTimeout(r, 500)); // Short pause before slam
+              await new Promise(r => setTimeout(r, 300)); // Short pause before summary
               setPhase('SUMMARY');
               setUnassignedPlayers(prev => prev.filter(p => !draftQueue.find(w => w.id === p.id)));
           }
@@ -257,13 +444,77 @@ export const LotteryPhase: React.FC<{
     const newTeams = teams.map(t => t.color === currentTeamColor ? { ...t, members: lockedPlayers } : t);
     setTeams(newTeams);
     
-    if (unassignedPlayers.length === 0) {
-      onComplete(newTeams);
-    } else {
-      setCurrentTeamColor(null);
-      setLockedPlayers([]);
-      setPhase('IDLE');
+    // Track completed team for recap
+    const completedTeam = newTeams.find(t => t.color === currentTeamColor);
+    if (completedTeam) {
+      setCompletedTeams(prev => [...prev, completedTeam]);
     }
+    
+    if (unassignedPlayers.length === 0) {
+      // Show final recap before completing
+      setPhase('FINAL_RECAP');
+    } else {
+      // Find next team color for preview
+      const remainingColors = teamQueue.filter(c => newTeams.find(t => t.color === c)?.members.length === 0);
+      if (remainingColors.length > 0) {
+        setNextTeamColor(remainingColors[0]);
+        setCurrentTeamColor(null);
+        setLockedPlayers([]);
+        setPhase('NEXT_TEAM_PREVIEW');
+        // User will click INITIATE to proceed
+      } else {
+        setCurrentTeamColor(null);
+        setLockedPlayers([]);
+        setPhase('IDLE');
+      }
+    }
+  };
+  
+  // Start draft for the next team from preview screen
+  const initiateNextTeam = () => {
+    if (!nextTeamColor) return;
+    setCurrentTeamColor(nextTeamColor);
+    setNextTeamColor(null);
+    
+    // Check if this is the last team
+    const remainingCount = teamQueue.filter(c => teams.find(t => t.color === c)?.members.length === 0).length;
+    
+    if (remainingCount === 1) {
+      // Last team - assign all remaining
+      const winners = unassignedPlayers;
+      setDraftQueue(winners);
+      setLockedPlayers(winners);
+      
+      setAssignedMap(prev => {
+        const m = { ...prev };
+        winners.forEach(p => m[p.id] = nextTeamColor);
+        return m;
+      });
+
+      setUnassignedPlayers([]);
+      setPhase('SUMMARY');
+
+      if (!isMuted && boomAudioRef.current) {
+        boomAudioRef.current.currentTime = 0;
+        boomAudioRef.current.play().catch(() => {});
+      }
+    } else {
+      // Normal draft
+      const winners = pickBatch(unassignedPlayers, nextTeamColor, teams);
+      if (winners.length === 0) {
+        setDraftQueue([]);
+        setLockedPlayers([]);
+        setPhase('SUMMARY');
+        return;
+      }
+      setDraftQueue(winners);
+      setLockedPlayers([]);
+      setPhase('DRAFTING');
+    }
+  };
+  
+  const finishDraft = () => {
+    onComplete(teams);
   };
 
   const quickFinish = () => {
@@ -272,14 +523,25 @@ export const LotteryPhase: React.FC<{
       const remainingColors = teamQueue.filter(c => currentTeams.find(t => t.color === c)?.members.length === 0);
       remainingColors.forEach((color, index) => {
          const isLast = index === remainingColors.length - 1;
-         const winners = isLast ? currentPool : pickBatch(currentPool, color);
+         const winners = isLast ? currentPool : pickBatch(currentPool, color, currentTeams);
          currentTeams = currentTeams.map(t => t.color === color ? { ...t, members: winners } : t);
          const winnerIds = new Set(winners.map(w => w.id));
          currentPool = currentPool.filter(p => !winnerIds.has(p.id));
       });
       setTeams(currentTeams);
       setUnassignedPlayers([]);
-      onComplete(currentTeams);
+      
+      // Update assigned map for all players
+      const newAssignedMap: Record<string, TeamColor> = {};
+      currentTeams.forEach(team => {
+        team.members.forEach(member => {
+          newAssignedMap[member.id] = team.color;
+        });
+      });
+      setAssignedMap(newAssignedMap);
+      
+      // Show Final Recap instead of immediately completing
+      setPhase('FINAL_RECAP');
   };
 
   // Sort players for the grid (stable order)
@@ -347,20 +609,20 @@ export const LotteryPhase: React.FC<{
 
       const worldWidth = tileLayout.totalWidth || 1;
       const worldHeight = tileLayout.totalHeight || 1;
-      const paddingRatio = 0.85; // leave breathing room on edges
+      const paddingRatio = 1.0; // leave breathing room on edges
       const fitScale = Math.max(
           0.1,
           Math.min(width / worldWidth, height / worldHeight) * paddingRatio
       );
       const clampedScale = Math.min(fitScale, 5);
 
-      const pointX = (width - worldWidth * clampedScale) / 2;
+      const pointX = (width - worldWidth * clampedScale) / 0.8;
       const pointY = (height - worldHeight * clampedScale) / 2;
-
+      const yOffset = 80; // pixels to push it down
       viewState.current = {
           scale: clampedScale,
           pointX,
-          pointY,
+          pointY: pointY + yOffset,
           panning: false,
           startX: 0,
           startY: 0
@@ -472,32 +734,67 @@ export const LotteryPhase: React.FC<{
                         const isAssigned = !!assignedMap[player.id];
                         const teamColor = assignedMap[player.id];
                         const isDecoy = decoyIds.includes(player.id);
+                        const isSlam = slamPlayerId === player.id;
+                        const isPreviousTeam = isAssigned && teamColor !== currentTeamColor;
                         
                         // Determine Style
-                        let bgStyle = { backgroundColor: '#2e2e2e' };
+                        let bgStyle: React.CSSProperties = { backgroundColor: '#2e2e2e' };
                         let nameClass = "text-[#00fff2]";
                         let numberClass = "text-[#00fff2]";
                         let genderClass = "text-gray-500";
                         let shadowClass = "shadow-[inset_0_0_20px_rgba(0,0,0,0.8)]";
                         let borderClass = "border border-[#444]";
                         let zIndex = "z-0";
+                        let slamClass = "";
+                        let scaleStyle = "scale(1)";
+                        
+                        if (isSlam) {
+                            // SLAM animation - scale up then down
+                            slamClass = "animate-slam-tile";
+                            zIndex = "z-30";
+                        }
                         
                         if (isAssigned) {
                             const config = TEAM_CONFIG[teamColor];
-                            bgStyle = { backgroundColor: config.hex };
+                            const isCurrentTeam = teamColor === currentTeamColor;
+                            
+                            if (isCurrentTeam) {
+                              // Current drafting team - full color, normal size
+                              bgStyle = { backgroundColor: config.hex };
+                              nameClass = "text-white";
+                              numberClass = "text-white";
+                              genderClass = "text-white/70";
+                              shadowClass = isSlam 
+                                ? "shadow-[0_0_50px_rgba(255,255,255,1)]" 
+                                : "shadow-[0_0_20px_rgba(255,255,255,0.6)]";
+                              borderClass = isSlam ? "border-4 border-white" : "border border-white";
+                              zIndex = isSlam ? "z-30" : "z-10";
+                              // Keep normal scale for current team
+                            } else {
+                              // Previously assigned teams - smaller, lighter & blurred
+                              bgStyle = { backgroundColor: `${config.hex}40` }; // Even more transparent
+                              nameClass = "text-white/60";
+                              numberClass = "text-white/60";
+                              genderClass = "text-white/40";
+                              shadowClass = "shadow-none";
+                              borderClass = "border border-white/30";
+                              zIndex = "z-0";
+                              scaleStyle = "scale(0.7)";
+                            }
+                        } else if (isDecoy && currentTeamColor) {
+                            // Flickering candidates - use current team color
+                            const teamConfig = TEAM_CONFIG[currentTeamColor];
+                            bgStyle = { 
+                              backgroundColor: teamConfig.hex,
+                              boxShadow: `0 0 30px ${teamConfig.hex}, 0 0 60px ${teamConfig.hex}80`
+                            };
                             nameClass = "text-white";
                             numberClass = "text-white";
-                            genderClass = "text-white/70";
-                            shadowClass = "shadow-[0_0_20px_rgba(255,255,255,0.6)]";
-                            borderClass = "border border-white";
-                            zIndex = "z-10";
-                        } else if (isDecoy) {
-                            bgStyle = { backgroundColor: '#fff' };
-                            nameClass = "text-squid-pink";
-                            numberClass = "text-squid-pink";
-                            genderClass = "text-squid-pink/80";
-                            shadowClass = "shadow-[0_0_25px_rgba(237,27,118,0.8)]";
+                            genderClass = "text-white/80";
+                            shadowClass = ""; // Using inline style instead
+                            borderClass = "border-2 border-white";
                             zIndex = "z-20";
+                            scaleStyle = "scale(1.05)"; // Slight pop
                         }
                         
                         if (!isAssigned && !isDecoy) {
@@ -508,9 +805,10 @@ export const LotteryPhase: React.FC<{
                             <div 
                                 key={player.id}
                                 className={`
-                                    absolute w-[120px] h-[120px] transition-all duration-300
-                                    ${shadowClass} ${borderClass} ${zIndex}
-                                    hover:bg-[#444] hover:z-30 hover:shadow-[0_0_15px_#00fff2]
+                                    absolute w-[120px] h-[120px] transition-all duration-150 ease-out
+                                    ${shadowClass} ${borderClass} ${zIndex} ${slamClass}
+                                    ${isPreviousTeam ? 'blur-[1px] opacity-60' : ''}
+                                    ${isDecoy ? 'animate-pulse' : ''}
                                 `}
                                 style={{
                                     ...bgStyle,
@@ -518,7 +816,7 @@ export const LotteryPhase: React.FC<{
                                     top: `${y}px`,
                                     width: `${tileLayout.tileSize}px`,
                                     height: `${tileLayout.tileSize}px`,
-                                    transform: 'translate(-50%, -50%) rotate(45deg)'
+                                    transform: `translate(-50%, -50%) rotate(45deg) ${scaleStyle}`
                                 }}
                             >
                                 {/* CONTENT (Counter-Rotated) */}
@@ -577,7 +875,7 @@ export const LotteryPhase: React.FC<{
                       </div>
                    </div>
                 ) : (
-                   unassignedPlayers.length > 0 && phase !== 'SUMMARY' && (
+                   unassignedPlayers.length > 0 && phase !== 'SUMMARY' && phase !== 'FIRST_TEAM_INTRO' && (
                       <div className="flex gap-4">
                         <Button onClick={startNextTeam} className="py-3 px-8 text-lg shadow-[0_0_20px_rgba(237,27,118,0.3)] hover:shadow-[0_0_30px_rgba(237,27,118,0.6)] hover:scale-105 transition-all border-2 border-squid-pink bg-black/50 hover:bg-squid-pink text-white backdrop-blur-sm">
                           INITIATE
@@ -595,51 +893,669 @@ export const LotteryPhase: React.FC<{
 
        {/* SUMMARY SCREEN OVERLAY */}
        {phase === 'SUMMARY' && currentTeamColor && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-fade-in">
-             <div className="relative w-full max-w-6xl bg-black border border-gray-800 shadow-[0_0_100px_rgba(0,0,0,1)] overflow-hidden flex flex-col max-h-[90vh] animate-slam">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+             <div className="relative w-full max-w-4xl bg-gradient-to-b from-gray-900 to-black border border-gray-700 rounded-lg shadow-[0_0_100px_rgba(0,0,0,1)] overflow-hidden flex flex-col max-h-[90vh] animate-slam">
                 
                 {/* Header */}
-                <div className={`w-full py-8 ${TEAM_CONFIG[currentTeamColor].bg} flex justify-center items-center shadow-lg relative overflow-hidden`}>
-                    <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-30"></div>
-                    <h1 className="font-display text-5xl md:text-7xl text-white uppercase drop-shadow-[0_4px_8px_rgba(0,0,0,0.5)] tracking-[0.2em] relative z-10">
-                        {currentTeamColor}
+                <div className="w-full py-6 flex flex-col items-center relative">
+                    <div 
+                      className="w-20 h-20 rotate-45 flex items-center justify-center border-4 shadow-[0_0_40px_currentColor] mb-4"
+                      style={{ backgroundColor: TEAM_CONFIG[currentTeamColor].hex, borderColor: 'white', color: TEAM_CONFIG[currentTeamColor].hex }}
+                    >
+                      <span className="-rotate-45 text-white font-display text-2xl uppercase">
+                        {currentTeamColor.charAt(0)}
+                      </span>
+                    </div>
+                    <h1 
+                      className="font-display text-4xl md:text-5xl uppercase tracking-[0.3em]"
+                      style={{ color: TEAM_CONFIG[currentTeamColor].hex }}
+                    >
+                      TEAM {currentTeamColor}
                     </h1>
+                    <p className="text-gray-500 text-sm mt-2 tracking-widest">{lockedPlayers.length} MEMBERS RECRUITED</p>
                 </div>
                 
-                {/* Tight Grid Summary */}
-                <div className="p-8 flex flex-col items-center bg-black relative flex-1 overflow-hidden">
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 via-black to-black opacity-50"></div>
-                    
-                    <div className="flex flex-wrap justify-center gap-4 w-full overflow-y-auto px-4 py-8 custom-scrollbar relative z-10">
+                {/* Player List - Name First */}
+                <div className="flex-1 overflow-y-auto px-6 pb-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {lockedPlayers.map((p, i) => (
                             <div 
                                 key={p.id} 
-                                className="relative w-24 h-24 md:w-32 md:h-32 flex items-center justify-center animate-pop-in"
-                                style={{ animationDelay: `${i * 50}ms`, animationFillMode: 'backwards' }}
+                                className="flex items-center gap-4 p-4 bg-white/5 rounded-lg border border-white/10 animate-pop-in hover:bg-white/10 transition-colors"
+                                style={{ animationDelay: `${i * 30}ms`, animationFillMode: 'backwards' }}
                             >
-                                <div className={`
-                                    absolute inset-0 transform rotate-45 border-2 overflow-hidden shadow-lg
-                                    ${TEAM_CONFIG[currentTeamColor].bg} border-white
-                                `}>
-                                    <div className="absolute inset-0 transform -rotate-45 flex flex-col items-center justify-center text-white">
-                                        <span className="font-mono text-3xl font-bold leading-none mb-1 drop-shadow-md">
-                                            {String(sortedPlayers.findIndex(sp => sp.id === p.id) + 1).padStart(3, '0')}
-                                        </span>
-                                        <span className="text-[10px] font-display uppercase tracking-wider text-center px-1 leading-tight">
-                                            {p.name}
-                                        </span>
-                                    </div>
+                                {/* Player Number Badge */}
+                                <div 
+                                  className="w-12 h-12 rotate-45 flex-shrink-0 flex items-center justify-center border-2"
+                                  style={{ backgroundColor: TEAM_CONFIG[currentTeamColor].hex, borderColor: 'rgba(255,255,255,0.5)' }}
+                                >
+                                  <span className="-rotate-45 text-white font-mono text-sm font-bold">
+                                    {String(sortedPlayers.findIndex(sp => sp.id === p.id) + 1).padStart(3, '0')}
+                                  </span>
+                                </div>
+                                
+                                {/* Player Info - Name First */}
+                                <div className="flex flex-col flex-1 min-w-0">
+                                  <span className="text-white font-display text-lg uppercase tracking-wide truncate">
+                                    {p.name}
+                                  </span>
+                                  <span className="text-gray-500 text-xs uppercase tracking-widest">
+                                    {p.gender === 'M' ? 'Male' : p.gender === 'F' ? 'Female' : 'Non-Binary'}
+                                  </span>
                                 </div>
                             </div>
                         ))}
                     </div>
-
-                    <div className="mt-8 relative z-20 pb-4">
-                         <Button onClick={confirmTeam} className="px-20 py-5 text-2xl shadow-[0_0_40px_rgba(255,255,255,0.2)] animate-pulse border-2 border-white bg-transparent hover:bg-white hover:text-black transition-colors">
-                            CONFIRM
-                         </Button>
-                    </div>
                 </div>
+
+                {/* Footer */}
+                <div className="p-6 border-t border-gray-800 flex justify-center bg-black/50">
+                     <Button 
+                       onClick={confirmTeam} 
+                       className="px-16 py-4 text-xl border-2 bg-transparent hover:text-black transition-all"
+                       style={{ 
+                         borderColor: TEAM_CONFIG[currentTeamColor].hex, 
+                         color: TEAM_CONFIG[currentTeamColor].hex,
+                       }}
+                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = TEAM_CONFIG[currentTeamColor].hex}
+                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                     >
+                        CONFIRM TEAM
+                     </Button>
+                </div>
+             </div>
+          </div>
+       )}
+
+       {/* FIRST TEAM INTRO - AUTO-PLAY CINEMATIC */}
+       {phase === 'FIRST_TEAM_INTRO' && introTeamColor && (
+          <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/80 backdrop-blur-sm overflow-hidden">
+             
+             {/* Fade out container */}
+             <div 
+               className="absolute inset-0 flex items-center justify-center"
+               style={{
+                 animation: 'fadeIn 0.5s ease-out forwards, fadeOut 0.8s ease-in 2.7s forwards',
+               }}
+             >
+               {/* Radial Light Burst */}
+               <div 
+                 className="absolute w-[800px] h-[800px] rounded-full animate-radial-pulse"
+                 style={{
+                   background: `radial-gradient(circle, ${TEAM_CONFIG[introTeamColor].hex}40 0%, transparent 70%)`,
+                 }}
+               />
+               <div 
+                 className="absolute w-[600px] h-[600px] rounded-full animate-radial-pulse"
+                 style={{
+                   background: `radial-gradient(circle, ${TEAM_CONFIG[introTeamColor].hex}30 0%, transparent 60%)`,
+                   animationDelay: '0.5s',
+                 }}
+               />
+               
+               {/* Vertical Light Beams */}
+               {[...Array(5)].map((_, i) => (
+                 <div
+                   key={`beam-${i}`}
+                   className="absolute h-full w-1 animate-light-beam opacity-60"
+                   style={{
+                     background: `linear-gradient(to top, transparent, ${TEAM_CONFIG[introTeamColor].hex}, transparent)`,
+                     left: `${20 + i * 15}%`,
+                     animationDelay: `${0.1 * i}s`,
+                     filter: 'blur(4px)',
+                   }}
+                 />
+               ))}
+               
+               {/* Floating Particles */}
+               <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                 {[...Array(20)].map((_, i) => (
+                   <div
+                     key={i}
+                     className="absolute w-2 h-2 rotate-45 animate-particle-float"
+                     style={{
+                       backgroundColor: TEAM_CONFIG[introTeamColor].hex,
+                       left: `${5 + (i * 4.5)}%`,
+                       bottom: '-20px',
+                       animationDelay: `${i * 0.15}s`,
+                       animationDuration: `${2.5 + Math.random() * 2}s`,
+                       opacity: 0.8,
+                       boxShadow: `0 0 10px ${TEAM_CONFIG[introTeamColor].hex}`,
+                     }}
+                   />
+                 ))}
+               </div>
+               
+               {/* Spinning Outer Ring */}
+               <div 
+                 className="absolute w-96 h-96 rounded-full animate-tile-rotate"
+                 style={{
+                   background: `conic-gradient(from 0deg, transparent 0%, ${TEAM_CONFIG[introTeamColor].hex}50 10%, transparent 20%, transparent 50%, ${TEAM_CONFIG[introTeamColor].hex}50 60%, transparent 70%)`,
+                   filter: 'blur(8px)',
+                 }}
+               />
+               
+               {/* Second Counter-Rotating Ring */}
+               <div 
+                 className="absolute w-80 h-80 rounded-full"
+                 style={{
+                   background: `conic-gradient(from 180deg, transparent 0%, ${TEAM_CONFIG[introTeamColor].hex}30 15%, transparent 30%, transparent 50%, ${TEAM_CONFIG[introTeamColor].hex}30 65%, transparent 80%)`,
+                   filter: 'blur(6px)',
+                   animation: 'tileRotate 15s linear infinite reverse',
+                 }}
+               />
+               
+               <div className="flex flex-col items-center relative z-10">
+                 
+                 {/* Top Banner */}
+                 <div 
+                   className="mb-8 px-12 py-3 border-t border-b animate-banner-unfurl"
+                   style={{ 
+                     borderColor: `${TEAM_CONFIG[introTeamColor].hex}80`,
+                     background: `linear-gradient(90deg, transparent, ${TEAM_CONFIG[introTeamColor].hex}20, transparent)`,
+                     animationDelay: '0.3s',
+                     animationFillMode: 'backwards'
+                   }}
+                 >
+                   <span className="text-gray-300 text-sm uppercase tracking-[0.5em] font-light">FIRST TEAM</span>
+                 </div>
+                 
+                 {/* Motion Trail Effect */}
+                 {[...Array(3)].map((_, i) => (
+                   <div
+                     key={`trail-${i}`}
+                     className="absolute h-3 animate-trail-effect"
+                     style={{
+                       background: `linear-gradient(to left, ${TEAM_CONFIG[introTeamColor].hex}, transparent)`,
+                       top: '50%',
+                       marginTop: '-6px',
+                       animationDelay: `${i * 0.1}s`,
+                       opacity: 0.6 - i * 0.15,
+                       filter: 'blur(4px)',
+                     }}
+                   />
+                 ))}
+                 
+                 {/* Guild Emblem Container */}
+                 <div className="relative" style={{ animation: 'floatVertical 3s ease-in-out infinite', animationDelay: '1.5s' }}>
+                   
+                   {/* Pulsing Glow Behind */}
+                   <div 
+                     className="absolute inset-0 -m-8 animate-emblem-glow"
+                     style={{ color: TEAM_CONFIG[introTeamColor].hex, animationDelay: '1s' }}
+                   />
+                   
+                   {/* Outer Decorative Frame */}
+                   <div 
+                     className="absolute -inset-6 border-2 rotate-45 animate-fade-in"
+                     style={{ 
+                       borderColor: `${TEAM_CONFIG[introTeamColor].hex}40`,
+                       animationDelay: '1s',
+                       animationFillMode: 'backwards'
+                     }}
+                   />
+                   <div 
+                     className="absolute -inset-10 border rotate-45 animate-fade-in"
+                     style={{ 
+                       borderColor: `${TEAM_CONFIG[introTeamColor].hex}20`,
+                       animationDelay: '1.2s',
+                       animationFillMode: 'backwards'
+                     }}
+                   />
+                   
+                   {/* Main Emblem Tile - FLY IN FROM RIGHT */}
+                   <div 
+                     className="w-56 h-56 flex items-center justify-center border-4 animate-fly-in-right"
+                     style={{ 
+                       backgroundColor: TEAM_CONFIG[introTeamColor].hex, 
+                       borderColor: 'white', 
+                       boxShadow: `
+                         0 0 60px ${TEAM_CONFIG[introTeamColor].hex}, 
+                         0 0 120px ${TEAM_CONFIG[introTeamColor].hex}80,
+                         inset 0 0 60px rgba(255,255,255,0.2)
+                       `
+                     }}
+                   >
+                     {/* Inner Glow */}
+                     <div 
+                       className="absolute inset-4 border opacity-50"
+                       style={{ borderColor: 'rgba(255,255,255,0.3)' }}
+                     />
+                     
+                     {/* Team Name */}
+                     <span className="-rotate-45 text-white font-display text-6xl uppercase drop-shadow-[0_0_30px_rgba(255,255,255,1)] tracking-wider">
+                       {introTeamColor}
+                     </span>
+                   </div>
+                   
+                   {/* Shimmer Overlay */}
+                   <div 
+                     className="absolute inset-0 rotate-45 overflow-hidden pointer-events-none animate-fade-in"
+                     style={{ animationDelay: '1.2s', animationFillMode: 'backwards' }}
+                   >
+                     <div 
+                       className="absolute inset-0 animate-shimmer"
+                       style={{
+                         background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
+                         backgroundSize: '200% 100%',
+                       }}
+                     />
+                   </div>
+                   
+                   {/* Corner Diamonds */}
+                   {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, y], i) => (
+                     <div
+                       key={`corner-${i}`}
+                       className="absolute w-4 h-4 rotate-45 animate-fade-in"
+                       style={{
+                         backgroundColor: TEAM_CONFIG[introTeamColor].hex,
+                         boxShadow: `0 0 15px ${TEAM_CONFIG[introTeamColor].hex}`,
+                         top: y < 0 ? '-24px' : 'auto',
+                         bottom: y > 0 ? '-24px' : 'auto',
+                         left: x < 0 ? '-24px' : 'auto',
+                         right: x > 0 ? '-24px' : 'auto',
+                         animationDelay: `${1 + i * 0.1}s`,
+                         animationFillMode: 'backwards',
+                       }}
+                     />
+                   ))}
+                 </div>
+                 
+                 {/* Auto-Start Text */}
+                 <div 
+                   className="mt-12 flex flex-col items-center gap-4 animate-fade-in"
+                   style={{ animationDelay: '1s', animationFillMode: 'backwards' }}
+                 >
+                   {/* Decorative Line */}
+                   <div className="flex items-center gap-4 w-full max-w-md">
+                     <div className="flex-1 h-px" style={{ background: `linear-gradient(to right, transparent, ${TEAM_CONFIG[introTeamColor].hex})` }} />
+                     <div className="w-2 h-2 rotate-45" style={{ backgroundColor: TEAM_CONFIG[introTeamColor].hex }} />
+                     <div className="flex-1 h-px" style={{ background: `linear-gradient(to left, transparent, ${TEAM_CONFIG[introTeamColor].hex})` }} />
+                   </div>
+                   
+                   {/* Loading indicator */}
+                   <div className="flex items-center gap-3 mt-4">
+                     <div className="flex gap-1">
+                       {[0, 1, 2].map(i => (
+                         <div 
+                           key={i}
+                           className="w-2 h-2 rounded-full animate-pulse"
+                           style={{ 
+                             backgroundColor: TEAM_CONFIG[introTeamColor].hex,
+                             animationDelay: `${i * 0.2}s`
+                           }}
+                         />
+                       ))}
+                     </div>
+                     <span className="text-gray-400 text-sm uppercase tracking-[0.3em]">INITIALIZING DRAFT</span>
+                     <div className="flex gap-1">
+                       {[0, 1, 2].map(i => (
+                         <div 
+                           key={i}
+                           className="w-2 h-2 rounded-full animate-pulse"
+                           style={{ 
+                             backgroundColor: TEAM_CONFIG[introTeamColor].hex,
+                             animationDelay: `${0.6 + i * 0.2}s`
+                           }}
+                         />
+                       ))}
+                     </div>
+                   </div>
+                 </div>
+                 
+                 {/* Bottom Decorative Element */}
+                 <div 
+                   className="mt-8 flex items-center gap-2 animate-fade-in"
+                   style={{ animationDelay: '1.4s', animationFillMode: 'backwards' }}
+                 >
+                   {[...Array(5)].map((_, i) => (
+                     <div
+                       key={`dot-${i}`}
+                       className="w-1.5 h-1.5 rotate-45"
+                       style={{
+                         backgroundColor: i === 2 ? TEAM_CONFIG[introTeamColor].hex : `${TEAM_CONFIG[introTeamColor].hex}40`,
+                       }}
+                     />
+                   ))}
+                 </div>
+               </div>
+             </div>
+          </div>
+       )}
+
+       {/* NEXT TEAM PREVIEW - CINEMATIC GUILD REVEAL */}
+       {phase === 'NEXT_TEAM_PREVIEW' && nextTeamColor && (
+          <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/80 backdrop-blur-sm overflow-hidden">
+             
+             {/* Radial Light Burst */}
+             <div 
+               className="absolute w-[800px] h-[800px] rounded-full animate-radial-pulse"
+               style={{
+                 background: `radial-gradient(circle, ${TEAM_CONFIG[nextTeamColor].hex}40 0%, transparent 70%)`,
+               }}
+             />
+             <div 
+               className="absolute w-[600px] h-[600px] rounded-full animate-radial-pulse"
+               style={{
+                 background: `radial-gradient(circle, ${TEAM_CONFIG[nextTeamColor].hex}30 0%, transparent 60%)`,
+                 animationDelay: '0.5s',
+               }}
+             />
+             
+             {/* Vertical Light Beams */}
+             {[...Array(5)].map((_, i) => (
+               <div
+                 key={`beam-${i}`}
+                 className="absolute h-full w-1 animate-light-beam opacity-60"
+                 style={{
+                   background: `linear-gradient(to top, transparent, ${TEAM_CONFIG[nextTeamColor].hex}, transparent)`,
+                   left: `${20 + i * 15}%`,
+                   animationDelay: `${0.1 * i}s`,
+                   filter: 'blur(4px)',
+                 }}
+               />
+             ))}
+             
+             {/* Floating Particles */}
+             <div className="absolute inset-0 overflow-hidden pointer-events-none">
+               {[...Array(20)].map((_, i) => (
+                 <div
+                   key={i}
+                   className="absolute w-2 h-2 rotate-45 animate-particle-float"
+                   style={{
+                     backgroundColor: TEAM_CONFIG[nextTeamColor].hex,
+                     left: `${5 + (i * 4.5)}%`,
+                     bottom: '-20px',
+                     animationDelay: `${i * 0.15}s`,
+                     animationDuration: `${2.5 + Math.random() * 2}s`,
+                     opacity: 0.8,
+                     boxShadow: `0 0 10px ${TEAM_CONFIG[nextTeamColor].hex}`,
+                   }}
+                 />
+               ))}
+             </div>
+             
+             {/* Spinning Outer Ring */}
+             <div 
+               className="absolute w-96 h-96 rounded-full animate-tile-rotate"
+               style={{
+                 background: `conic-gradient(from 0deg, transparent 0%, ${TEAM_CONFIG[nextTeamColor].hex}50 10%, transparent 20%, transparent 50%, ${TEAM_CONFIG[nextTeamColor].hex}50 60%, transparent 70%)`,
+                 filter: 'blur(8px)',
+               }}
+             />
+             
+             {/* Second Counter-Rotating Ring */}
+             <div 
+               className="absolute w-80 h-80 rounded-full"
+               style={{
+                 background: `conic-gradient(from 180deg, transparent 0%, ${TEAM_CONFIG[nextTeamColor].hex}30 15%, transparent 30%, transparent 50%, ${TEAM_CONFIG[nextTeamColor].hex}30 65%, transparent 80%)`,
+                 filter: 'blur(6px)',
+                 animation: 'tileRotate 15s linear infinite reverse',
+               }}
+             />
+             
+             <div className="flex flex-col items-center relative z-10">
+               
+               {/* Top Banner */}
+               <div 
+                 className="mb-8 px-12 py-3 border-t border-b animate-banner-unfurl"
+                 style={{ 
+                   borderColor: `${TEAM_CONFIG[nextTeamColor].hex}80`,
+                   background: `linear-gradient(90deg, transparent, ${TEAM_CONFIG[nextTeamColor].hex}20, transparent)`,
+                   animationDelay: '0.3s',
+                   animationFillMode: 'backwards'
+                 }}
+               >
+                 <span className="text-gray-300 text-sm uppercase tracking-[0.5em] font-light">NOW RECRUITING</span>
+               </div>
+               
+               {/* Guild Emblem Container */}
+               <div className="relative animate-float-vertical" style={{ animationDelay: '1.2s' }}>
+                 
+                 {/* Pulsing Glow Behind */}
+                 <div 
+                   className="absolute inset-0 -m-8 animate-emblem-glow"
+                   style={{ color: TEAM_CONFIG[nextTeamColor].hex }}
+                 />
+                 
+                 {/* Outer Decorative Frame */}
+                 <div 
+                   className="absolute -inset-6 border-2 rotate-45 animate-fade-in"
+                   style={{ 
+                     borderColor: `${TEAM_CONFIG[nextTeamColor].hex}40`,
+                     animationDelay: '0.8s',
+                     animationFillMode: 'backwards'
+                   }}
+                 />
+                 <div 
+                   className="absolute -inset-10 border rotate-45 animate-fade-in"
+                   style={{ 
+                     borderColor: `${TEAM_CONFIG[nextTeamColor].hex}20`,
+                     animationDelay: '1s',
+                     animationFillMode: 'backwards'
+                   }}
+                 />
+                 
+                 {/* Main Emblem Tile */}
+                 <div 
+                   className="w-56 h-56 flex items-center justify-center border-4 animate-emblem-reveal"
+                   style={{ 
+                     backgroundColor: TEAM_CONFIG[nextTeamColor].hex, 
+                     borderColor: 'white', 
+                     boxShadow: `
+                       0 0 60px ${TEAM_CONFIG[nextTeamColor].hex}, 
+                       0 0 120px ${TEAM_CONFIG[nextTeamColor].hex}80,
+                       inset 0 0 60px rgba(255,255,255,0.2)
+                     `
+                   }}
+                 >
+                   {/* Inner Glow */}
+                   <div 
+                     className="absolute inset-4 border opacity-50"
+                     style={{ borderColor: 'rgba(255,255,255,0.3)' }}
+                   />
+                   
+                   {/* Team Name */}
+                   <span className="-rotate-45 text-white font-display text-6xl uppercase drop-shadow-[0_0_30px_rgba(255,255,255,1)] tracking-wider">
+                     {nextTeamColor}
+                   </span>
+                 </div>
+                 
+                 {/* Shimmer Overlay */}
+                 <div 
+                   className="absolute inset-0 rotate-45 overflow-hidden pointer-events-none animate-fade-in"
+                   style={{ animationDelay: '1.2s', animationFillMode: 'backwards' }}
+                 >
+                   <div 
+                     className="absolute inset-0 animate-shimmer"
+                     style={{
+                       background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
+                       backgroundSize: '200% 100%',
+                     }}
+                   />
+                 </div>
+                 
+                 {/* Corner Diamonds */}
+                 {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, y], i) => (
+                   <div
+                     key={`corner-${i}`}
+                     className="absolute w-4 h-4 rotate-45 animate-fade-in"
+                     style={{
+                       backgroundColor: TEAM_CONFIG[nextTeamColor].hex,
+                       boxShadow: `0 0 15px ${TEAM_CONFIG[nextTeamColor].hex}`,
+                       top: y < 0 ? '-24px' : 'auto',
+                       bottom: y > 0 ? '-24px' : 'auto',
+                       left: x < 0 ? '-24px' : 'auto',
+                       right: x > 0 ? '-24px' : 'auto',
+                       animationDelay: `${1 + i * 0.1}s`,
+                       animationFillMode: 'backwards',
+                     }}
+                   />
+                 ))}
+               </div>
+               
+               {/* Guild Info Banner */}
+               <div 
+                 className="mt-12 flex flex-col items-center gap-4 animate-fade-in"
+                 style={{ animationDelay: '0.8s', animationFillMode: 'backwards' }}
+               >
+                 {/* Decorative Line */}
+                 <div className="flex items-center gap-4 w-full max-w-md">
+                   <div className="flex-1 h-px" style={{ background: `linear-gradient(to right, transparent, ${TEAM_CONFIG[nextTeamColor].hex})` }} />
+                   <div className="w-2 h-2 rotate-45" style={{ backgroundColor: TEAM_CONFIG[nextTeamColor].hex }} />
+                   <div className="flex-1 h-px" style={{ background: `linear-gradient(to left, transparent, ${TEAM_CONFIG[nextTeamColor].hex})` }} />
+                 </div>
+                 
+                 {/* Stats */}
+                 <div className="flex items-center gap-6 text-gray-400 text-sm uppercase tracking-widest">
+                   <div className="flex flex-col items-center">
+                     <span className="text-3xl font-display" style={{ color: TEAM_CONFIG[nextTeamColor].hex }}>
+                       {unassignedPlayers.length}
+                     </span>
+                     <span className="text-xs text-gray-500">SURVIVORS</span>
+                   </div>
+                   <div className="w-px h-12" style={{ backgroundColor: `${TEAM_CONFIG[nextTeamColor].hex}40` }} />
+                   <div className="flex flex-col items-center">
+                     <span className="text-3xl font-display" style={{ color: TEAM_CONFIG[nextTeamColor].hex }}>
+                       {(Object.values(genderTargets[nextTeamColor] || {}) as number[]).reduce((a, b) => a + b, 0)}
+                     </span>
+                     <span className="text-xs text-gray-500">TO DRAFT</span>
+                   </div>
+                 </div>
+               </div>
+               
+               {/* Epic Initiate Button */}
+               <Button 
+                 onClick={initiateNextTeam} 
+                 className="mt-10 py-5 px-20 text-xl font-display uppercase tracking-[0.3em] transition-all duration-300 border-2 bg-transparent text-white relative overflow-hidden group animate-fade-in"
+                 style={{ 
+                   borderColor: TEAM_CONFIG[nextTeamColor].hex,
+                   animationDelay: '1.2s',
+                   animationFillMode: 'backwards'
+                 }}
+                 onMouseEnter={(e) => {
+                   e.currentTarget.style.backgroundColor = TEAM_CONFIG[nextTeamColor].hex;
+                   e.currentTarget.style.boxShadow = `0 0 60px ${TEAM_CONFIG[nextTeamColor].hex}, 0 0 100px ${TEAM_CONFIG[nextTeamColor].hex}60`;
+                   e.currentTarget.style.transform = 'scale(1.05)';
+                 }}
+                 onMouseLeave={(e) => {
+                   e.currentTarget.style.backgroundColor = 'transparent';
+                   e.currentTarget.style.boxShadow = 'none';
+                   e.currentTarget.style.transform = 'scale(1)';
+                 }}
+               >
+                 <span className="relative z-10">BEGIN SELECTION</span>
+                 {/* Button Shimmer */}
+                 <div 
+                   className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity animate-shimmer"
+                   style={{
+                     background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%)',
+                     backgroundSize: '200% 100%',
+                   }}
+                 />
+               </Button>
+               
+               {/* Bottom Decorative Element */}
+               <div 
+                 className="mt-8 flex items-center gap-2 animate-fade-in"
+                 style={{ animationDelay: '1.4s', animationFillMode: 'backwards' }}
+               >
+                 {[...Array(5)].map((_, i) => (
+                   <div
+                     key={`dot-${i}`}
+                     className="w-1.5 h-1.5 rotate-45"
+                     style={{
+                       backgroundColor: i === 2 ? TEAM_CONFIG[nextTeamColor].hex : `${TEAM_CONFIG[nextTeamColor].hex}40`,
+                     }}
+                   />
+                 ))}
+               </div>
+             </div>
+          </div>
+       )}
+
+       {/* FINAL RECAP */}
+       {phase === 'FINAL_RECAP' && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/98 backdrop-blur-md overflow-auto py-8">
+             <div className="w-full max-w-6xl px-6 flex flex-col items-center">
+               
+               {/* Header */}
+               <div className="flex items-center gap-4 mb-8 animate-fade-in">
+                 <div className="h-px w-16 bg-gradient-to-r from-transparent to-squid-pink"></div>
+                 <h1 className="font-display text-3xl md:text-4xl text-white uppercase tracking-[0.3em]">
+                   Draft Complete
+                 </h1>
+                 <div className="h-px w-16 bg-gradient-to-l from-transparent to-squid-pink"></div>
+               </div>
+               
+               {/* Teams Grid - Horizontal Scrollable on Mobile */}
+               <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-10">
+                 {teams.filter(t => t.members.length > 0).map((team, teamIndex) => (
+                   <div 
+                     key={team.color} 
+                     className="bg-white/5 rounded-lg border border-white/10 overflow-hidden animate-pop-in"
+                     style={{ animationDelay: `${teamIndex * 100}ms`, animationFillMode: 'backwards' }}
+                   >
+                     {/* Team Header */}
+                     <div 
+                       className="px-4 py-3 flex items-center gap-3 border-b border-white/10"
+                       style={{ backgroundColor: `${TEAM_CONFIG[team.color].hex}20` }}
+                     >
+                       <div 
+                         className="w-8 h-8 rotate-45 flex items-center justify-center"
+                         style={{ backgroundColor: TEAM_CONFIG[team.color].hex }}
+                       >
+                         <span className="-rotate-45 text-white font-bold text-sm">
+                           {team.members.length}
+                         </span>
+                       </div>
+                       <span 
+                         className="font-display text-xl uppercase tracking-wider"
+                         style={{ color: TEAM_CONFIG[team.color].hex }}
+                       >
+                         {team.color}
+                       </span>
+                     </div>
+                     
+                     {/* Team Members - Name Focused */}
+                     <div className="p-3 space-y-1 max-h-[340px] overflow-y-auto custom-scrollbar">
+                       {team.members.map((member, i) => (
+                         <div 
+                           key={member.id}
+                           className="flex items-center gap-3 px-2 py-1 rounded hover:bg-white/5 transition-colors"
+                         >
+                           <span 
+                             className="text-xs font-mono w-8 text-center"
+                             style={{ color: TEAM_CONFIG[team.color].hex }}
+                           >
+                             {String(sortedPlayers.findIndex(sp => sp.id === member.id) + 1).padStart(3, '0')}
+                           </span>
+                           <span className="text-white text-sm font-medium flex-1 truncate">
+                             {member.name}
+                           </span>
+                           <span className="text-gray-600 text-xs">
+                             {member.gender}
+                           </span>
+                         </div>
+                       ))}
+                     </div>
+                   </div>
+                 ))}
+               </div>
+               
+               {/* Footer Stats */}
+               <div className="flex items-center gap-8 mb-8 text-gray-500 text-sm">
+                 <span>{teams.filter(t => t.members.length > 0).length} Teams</span>
+                 <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+                 <span>{players.length} Players</span>
+               </div>
+               
+               <Button 
+                 onClick={finishDraft} 
+                 className="px-12 py-4 text-lg border-2 border-squid-pink bg-squid-pink/10 hover:bg-squid-pink text-white transition-all"
+               >
+                 CONTINUE TO RESULTS
+               </Button>
              </div>
           </div>
        )}

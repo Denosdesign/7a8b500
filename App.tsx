@@ -135,74 +135,116 @@ const App: React.FC = () => {
   
   // Helper to generate matchups
   const generateMatchups = (currentTeams: Team[]): Matchup[] => {
-    // Separate teams into male and female members
-    const pools = currentTeams.map(t => {
-      const members = [...t.members];
-      const males = members.filter(m => m.gender === Gender.Male).sort(() => Math.random() - 0.5);
-      const females = members.filter(m => m.gender === Gender.Female).sort(() => Math.random() - 0.5);
-      const nonBinary = members.filter(m => m.gender === Gender.NonBinary).sort(() => Math.random() - 0.5);
-      
-      return { color: t.color, males, females, nonBinary };
+    const randomize = (arr: Player[]) => [...arr].sort(() => Math.random() - 0.5);
+
+    type TeamPool = {
+      color: TeamColor;
+      forced: Player[];
+      males: Player[];
+      females: Player[];
+      nonBinary: Player[];
+    };
+
+    const poolsByColor: Record<TeamColor, TeamPool> = {} as Record<TeamColor, TeamPool>;
+
+    Object.values(TeamColor).forEach(color => {
+      const team = currentTeams.find(t => t.color === color);
+      const members = team ? [...team.members] : [];
+      const forced = members.filter(m => m.forceFirstMatch);
+      const available = members.filter(m => !m.forceFirstMatch);
+
+      poolsByColor[color] = {
+        color,
+        forced,
+        males: randomize(available.filter(m => m.gender === Gender.Male)),
+        females: randomize(available.filter(m => m.gender === Gender.Female)),
+        nonBinary: randomize(available.filter(m => m.gender === Gender.NonBinary))
+      };
     });
 
-    // Calculate max rows needed for each gender
-    const maxMales = Math.max(...pools.map(p => p.males.length), 0);
-    const maxFemales = Math.max(...pools.map(p => p.females.length), 0);
-    const maxNonBinary = Math.max(...pools.map(p => p.nonBinary.length), 0);
-    
-    const generated: Matchup[] = [];
+    const orderedPools = Object.values(TeamColor).map(color => poolsByColor[color]);
+    const hasForced = orderedPools.some(pool => pool.forced.length > 0);
+    const matchups: Matchup[] = [];
+
+    if (hasForced) {
+      const firstRowPlayers: MatchupPlayer[] = Object.values(TeamColor).map(color => {
+        const pool = poolsByColor[color];
+        if (!pool) {
+          return { color, player: null };
+        }
+        const player =
+          pool.forced.shift() ||
+          pool.males.shift() ||
+          pool.females.shift() ||
+          pool.nonBinary.shift() ||
+          null;
+        return { color, player };
+      });
+
+      if (firstRowPlayers.some(entry => entry.player)) {
+        matchups.push({ id: 1, players: firstRowPlayers });
+      }
+    }
+
+    const maxCounts = orderedPools.reduce(
+      (acc, pool) => {
+        acc.maxMales = Math.max(acc.maxMales, pool.males.length);
+        acc.maxFemales = Math.max(acc.maxFemales, pool.females.length);
+        acc.maxNonBinary = Math.max(acc.maxNonBinary, pool.nonBinary.length);
+        return acc;
+      },
+      { maxMales: 0, maxFemales: 0, maxNonBinary: 0 }
+    );
+
     let maleRowIndex = 0;
     let femaleRowIndex = 0;
     let nonBinaryRowIndex = 0;
     let isMaleRow = true;
-    
-    // Alternate between male and female rows
-    while (maleRowIndex < maxMales || femaleRowIndex < maxFemales || nonBinaryRowIndex < maxNonBinary) {
+
+    while (
+      maleRowIndex < maxCounts.maxMales ||
+      femaleRowIndex < maxCounts.maxFemales ||
+      nonBinaryRowIndex < maxCounts.maxNonBinary
+    ) {
       const rowPlayers: MatchupPlayer[] = [];
-      
-      if (isMaleRow && maleRowIndex < maxMales) {
-        // Fill row with male players
+
+      if (isMaleRow && maleRowIndex < maxCounts.maxMales) {
         Object.values(TeamColor).forEach(color => {
-          const pool = pools.find(p => p.color === color);
-          if (pool && pool.males[maleRowIndex]) {
-            rowPlayers.push({ color, player: pool.males[maleRowIndex] });
-          } else {
-            rowPlayers.push({ color, player: null });
-          }
+          const pool = poolsByColor[color];
+          rowPlayers.push({ color, player: pool?.males[maleRowIndex] ?? null });
         });
         maleRowIndex++;
-      } else if (!isMaleRow && femaleRowIndex < maxFemales) {
-        // Fill row with female players
+      } else if (!isMaleRow && femaleRowIndex < maxCounts.maxFemales) {
         Object.values(TeamColor).forEach(color => {
-          const pool = pools.find(p => p.color === color);
-          if (pool && pool.females[femaleRowIndex]) {
-            rowPlayers.push({ color, player: pool.females[femaleRowIndex] });
-          } else {
-            rowPlayers.push({ color, player: null });
-          }
+          const pool = poolsByColor[color];
+          rowPlayers.push({ color, player: pool?.females[femaleRowIndex] ?? null });
         });
         femaleRowIndex++;
-      } else if (nonBinaryRowIndex < maxNonBinary) {
-        // Fill row with non-binary players
+      } else if (nonBinaryRowIndex < maxCounts.maxNonBinary) {
         Object.values(TeamColor).forEach(color => {
-          const pool = pools.find(p => p.color === color);
-          if (pool && pool.nonBinary[nonBinaryRowIndex]) {
-            rowPlayers.push({ color, player: pool.nonBinary[nonBinaryRowIndex] });
-          } else {
-            rowPlayers.push({ color, player: null });
-          }
+          const pool = poolsByColor[color];
+          rowPlayers.push({ color, player: pool?.nonBinary[nonBinaryRowIndex] ?? null });
         });
         nonBinaryRowIndex++;
+      } else {
+        break;
       }
-      
-      if (rowPlayers.some(p => p.player !== null)) {
-        generated.push({ id: generated.length + 1, players: rowPlayers });
+
+      if (rowPlayers.some(entry => entry.player)) {
+        matchups.push({ id: matchups.length + 1, players: rowPlayers });
       }
-      
+
       isMaleRow = !isMaleRow;
     }
-    
-    return generated;
+
+    if (matchups.length === 0) {
+      return [{
+        id: 1,
+        players: Object.values(TeamColor).map(color => ({ color, player: null }))
+      }];
+    }
+
+    return matchups.map((row, idx) => ({ ...row, id: idx + 1 }));
   };
 
   const completeLottery = (finalTeams: Team[]) => {

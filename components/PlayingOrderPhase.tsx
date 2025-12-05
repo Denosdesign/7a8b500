@@ -106,12 +106,11 @@ export const PlayingOrderPhase: React.FC<{
     <div className="w-full max-w-7xl mx-auto p-4 md:p-8 animate-fade-in pb-20 mt-12 flex flex-col items-center">
         <div className="w-full flex justify-between items-center mb-6 bg-black/80 p-4 border-l-4 border-squid-pink backdrop-blur-md sticky top-0 z-50 shadow-2xl">
             <h2 className="text-3xl font-display text-white uppercase tracking-widest">
-                <span className="text-squid-pink mr-2">PROTOCOL:</span> MATCH ORDER
-            </h2>
+                <span className="text-squid-pink mr-2">MATCH</span>  ORDER</h2>
             <div className="flex gap-4">
                  <Button onClick={handleExportMatchups} variant="secondary" className="text-xs py-2 px-4">DOWNLOAD</Button>
                  <Button onClick={handleReroll} variant="secondary" className="text-xs py-2 px-4 hover:border-red-500 hover:text-red-500">REROLL</Button>
-                 <Button onClick={onProceed} className="text-xs py-2 px-4 shadow-[0_0_15px_rgba(237,27,118,0.5)]">PROCEED TO SCOREBOARD</Button>
+                 <Button onClick={onProceed} className="text-xs py-2 px-4 shadow-[0_0_15px_rgba(237,27,118,0.5)]">SCOREBOARD</Button>
             </div>
         </div>
 
