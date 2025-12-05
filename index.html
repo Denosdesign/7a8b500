@@ -35,6 +35,28 @@
               'scale-in': 'scaleIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards',
               'slide-up': 'slideUp 0.5s ease-out backwards',
               'slam': 'slam 0.6s cubic-bezier(0.2, 0.8, 0.2, 1.2) forwards',
+              'slam-tile': 'slamTile 0.4s cubic-bezier(0.2, 0.8, 0.2, 1.2) forwards',
+              'announcement-slide': 'announcementSlide 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              'notification-slide': 'notificationSlide 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              'pop-in': 'popIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              'screen-flash': 'screenFlash 0.15s ease-out forwards',
+              'tile-entrance': 'tileEntrance 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
+              'tile-pulse': 'tilePulse 2s ease-in-out infinite',
+              'tile-rotate': 'tileRotate 20s linear infinite',
+              'text-reveal': 'textReveal 0.6s ease-out forwards',
+              'line-expand': 'lineExpand 0.8s ease-out forwards',
+              'particle-float': 'particleFloat 2s ease-out forwards',
+              'light-beam': 'lightBeam 1.5s ease-out forwards',
+              'emblem-reveal': 'emblemReveal 1.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
+              'fly-in-right': 'flyInRight 1s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+              'trail-effect': 'trailEffect 1.2s ease-out forwards',
+              'emblem-glow': 'emblemGlow 2s ease-in-out infinite',
+              'banner-unfurl': 'bannerUnfurl 0.8s ease-out forwards',
+              'epic-text-reveal': 'epicTextReveal 1s ease-out forwards',
+              'shimmer': 'shimmer 2s linear infinite',
+              'radial-pulse': 'radialPulse 2s ease-out infinite',
+              'float-vertical': 'floatVertical 3s ease-in-out infinite',
+              'fade-out': 'fadeOut 0.8s ease-in forwards',
             },
             keyframes: {
               float: {
@@ -49,6 +71,10 @@
                 '0%': { opacity: '0' },
                 '100%': { opacity: '1' },
               },
+              fadeOut: {
+                '0%': { opacity: '1' },
+                '100%': { opacity: '0' },
+              },
               scaleIn: {
                 '0%': { transform: 'scale(0.9)', opacity: '0' },
                 '100%': { transform: 'scale(1)', opacity: '1' },
@@ -60,6 +86,108 @@
               slam: {
                 '0%': { transform: 'scale(1.5)', opacity: '0' },
                 '100%': { transform: 'scale(1)', opacity: '1' },
+              },
+              slamTile: {
+                '0%': { transform: 'translate(-50%, -50%) rotate(45deg) scale(1)' },
+                '50%': { transform: 'translate(-50%, -50%) rotate(45deg) scale(1.3)' },
+                '100%': { transform: 'translate(-50%, -50%) rotate(45deg) scale(1)' },
+              },
+              announcementSlide: {
+                '0%': { transform: 'translateY(-50%) translateX(-100%)', opacity: '0' },
+                '15%': { transform: 'translateY(-50%) translateX(0)', opacity: '1' },
+                '85%': { transform: 'translateY(-50%) translateX(0)', opacity: '1' },
+                '100%': { transform: 'translateY(-50%) translateX(100%)', opacity: '0' },
+              },
+              notificationSlide: {
+                '0%': { transform: 'translateX(100%)', opacity: '0' },
+                '10%': { transform: 'translateX(0)', opacity: '1' },
+                '90%': { transform: 'translateX(0)', opacity: '1' },
+                '100%': { transform: 'translateX(100%)', opacity: '0' },
+              },
+              popIn: {
+                '0%': { transform: 'scale(0)', opacity: '0' },
+                '70%': { transform: 'scale(1.1)' },
+                '100%': { transform: 'scale(1)', opacity: '1' },
+              },
+              screenFlash: {
+                '0%': { opacity: '0.9' },
+                '100%': { opacity: '0' },
+              },
+              tileEntrance: {
+                '0%': { transform: 'rotate(45deg) scale(0) translateY(-100px)', opacity: '0' },
+                '50%': { transform: 'rotate(45deg) scale(1.2) translateY(0)', opacity: '1' },
+                '70%': { transform: 'rotate(45deg) scale(0.9)', opacity: '1' },
+                '100%': { transform: 'rotate(45deg) scale(1)', opacity: '1' },
+              },
+              tilePulse: {
+                '0%, 100%': { boxShadow: '0 0 50px currentColor, 0 0 100px currentColor' },
+                '50%': { boxShadow: '0 0 80px currentColor, 0 0 150px currentColor, 0 0 200px currentColor' },
+              },
+              tileRotate: {
+                '0%': { transform: 'rotate(0deg)' },
+                '100%': { transform: 'rotate(360deg)' },
+              },
+              textReveal: {
+                '0%': { opacity: '0', transform: 'translateY(20px)', letterSpacing: '0.8em' },
+                '100%': { opacity: '1', transform: 'translateY(0)', letterSpacing: '0.5em' },
+              },
+              lineExpand: {
+                '0%': { width: '0', opacity: '0' },
+                '100%': { width: '100%', opacity: '1' },
+              },
+              particleFloat: {
+                '0%': { transform: 'translateY(0) rotate(0deg)', opacity: '1' },
+                '100%': { transform: 'translateY(-200px) rotate(360deg)', opacity: '0' },
+              },
+              lightBeam: {
+                '0%': { transform: 'translateY(100%) scaleY(0)', opacity: '0' },
+                '30%': { transform: 'translateY(0) scaleY(1)', opacity: '1' },
+                '70%': { transform: 'translateY(0) scaleY(1)', opacity: '0.8' },
+                '100%': { transform: 'translateY(-100%) scaleY(0.5)', opacity: '0' },
+              },
+              emblemReveal: {
+                '0%': { transform: 'rotate(45deg) scale(0)', opacity: '0', filter: 'brightness(3)' },
+                '40%': { transform: 'rotate(45deg) scale(1.3)', opacity: '1', filter: 'brightness(2)' },
+                '60%': { transform: 'rotate(45deg) scale(0.95)', filter: 'brightness(1.2)' },
+                '80%': { transform: 'rotate(45deg) scale(1.05)', filter: 'brightness(1)' },
+                '100%': { transform: 'rotate(45deg) scale(1)', opacity: '1', filter: 'brightness(1)' },
+              },
+              flyInRight: {
+                '0%': { transform: 'rotate(45deg) translateX(150vw) scale(0.5)', opacity: '0' },
+                '60%': { transform: 'rotate(45deg) translateX(-30px) scale(1.1)', opacity: '1' },
+                '80%': { transform: 'rotate(45deg) translateX(15px) scale(0.95)' },
+                '100%': { transform: 'rotate(45deg) translateX(0) scale(1)', opacity: '1' },
+              },
+              trailEffect: {
+                '0%': { transform: 'translateX(100vw)', opacity: '0', width: '200px' },
+                '30%': { opacity: '1', width: '400px' },
+                '100%': { transform: 'translateX(-100vw)', opacity: '0', width: '100px' },
+              },
+              emblemGlow: {
+                '0%, 100%': { filter: 'drop-shadow(0 0 30px currentColor) drop-shadow(0 0 60px currentColor)' },
+                '50%': { filter: 'drop-shadow(0 0 50px currentColor) drop-shadow(0 0 100px currentColor) drop-shadow(0 0 150px currentColor)' },
+              },
+              bannerUnfurl: {
+                '0%': { transform: 'scaleY(0) translateY(-50%)', opacity: '0' },
+                '100%': { transform: 'scaleY(1) translateY(0)', opacity: '1' },
+              },
+              epicTextReveal: {
+                '0%': { opacity: '0', transform: 'scale(0.5)', letterSpacing: '1em', filter: 'blur(10px)' },
+                '50%': { opacity: '1', filter: 'blur(2px)' },
+                '100%': { opacity: '1', transform: 'scale(1)', letterSpacing: '0.4em', filter: 'blur(0)' },
+              },
+              shimmer: {
+                '0%': { backgroundPosition: '-200% 0' },
+                '100%': { backgroundPosition: '200% 0' },
+              },
+              radialPulse: {
+                '0%': { transform: 'scale(0.8)', opacity: '0.8' },
+                '50%': { transform: 'scale(1.2)', opacity: '0.3' },
+                '100%': { transform: 'scale(1.5)', opacity: '0' },
+              },
+              floatVertical: {
+                '0%, 100%': { transform: 'translateY(-10px)' },
+                '50%': { transform: 'translateY(10px)' },
               }
             }
           }
@@ -102,7 +230,7 @@
   }
 }
 </script>
-  <script type="module" crossorigin src="/7a8b500/assets/index-CsIuhLU9.js"></script>
+  <script type="module" crossorigin src="/7a8b500/assets/index-58vw5Z55.js"></script>
 </head>
   <body>
     <div id="root"></div>
