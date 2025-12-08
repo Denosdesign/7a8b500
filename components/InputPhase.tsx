@@ -19,7 +19,7 @@ export const InputPhase: React.FC<{
   const [singleGender, setSingleGender] = useState<Gender>(Gender.Male);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const parseFirstMatchFlag = (raw: unknown): boolean => {
+  const parseNoGenderRestriction = (raw: unknown): boolean => {
     if (typeof raw === 'boolean') return raw;
     if (typeof raw === 'number') return raw === 0;
     if (typeof raw === 'string') {
@@ -33,7 +33,7 @@ export const InputPhase: React.FC<{
         return numericValue === 0;
       }
 
-      if (['true', 'yes', 'y', 'first', 'start'].includes(normalized)) return true;
+      if (['true', 'yes', 'y'].includes(normalized)) return true;
       if (['false', 'no', 'n'].includes(normalized)) return false;
     }
     return false;
@@ -46,7 +46,7 @@ export const InputPhase: React.FC<{
       name: singleName.trim(),
       gender: singleGender,
       score: 0,
-      forceFirstMatch: false
+      noGenderRestriction: false
     };
     setPlayers([...players, newPlayer]);
     setSingleName('');
@@ -85,7 +85,7 @@ export const InputPhase: React.FC<{
              name: p.name,
              gender: p.gender || Gender.NonBinary,
              score: p.score || 0,
-             forceFirstMatch: parseFirstMatchFlag(p.forceFirstMatch)
+             noGenderRestriction: parseNoGenderRestriction(p.noGenderRestriction)
            }));
            setPlayers(prev => [...prev, ...importedPlayers]);
            return;
@@ -106,8 +106,8 @@ export const InputPhase: React.FC<{
                  if (g.startsWith('M')) gender = Gender.Male;
                  else if (g.startsWith('F')) gender = Gender.Female;
                }
-               const forceFirstMatch = parseFirstMatchFlag(markerRaw);
-               csvPlayers.push({ id: uuidv4(), name, gender, score: 0, forceFirstMatch });
+               const noGenderRestriction = parseNoGenderRestriction(markerRaw);
+               csvPlayers.push({ id: uuidv4(), name, gender, score: 0, noGenderRestriction });
              }
           });
           

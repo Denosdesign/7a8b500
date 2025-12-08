@@ -22,6 +22,8 @@ const rotateArray = <T,>(arr: T[], offset: number): T[] => {
 
 const shufflePlayers = (arr: Player[]): Player[] => [...arr].sort(() => Math.random() - 0.5);
 
+// Build gender targets only from players WITH gender restrictions (not "0" marked)
+// This determines how many M/F/NB each team should have (excluding flexible players)
 const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender, number>> => {
     const template = TEAM_COLORS_LIST.reduce((acc, color) => {
         acc[color] = createGenderCount();
@@ -31,13 +33,10 @@ const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender,
     const colorCount = TEAM_COLORS_LIST.length;
     if (colorCount === 0) return template;
 
-    const seed = players.reduce((acc, player, idx) => {
-        const firstCharCode = player.name?.charCodeAt(0) ?? 0;
-        return acc + firstCharCode + idx;
-    }, 0);
-    const distributionOrder = rotateArray(TEAM_COLORS_LIST, seed % colorCount);
-
-    const genderTotals = players.reduce((acc, player) => {
+    // Only count players WITHOUT noGenderRestriction for gender distribution
+    const genderRestrictedPlayers = players.filter(p => !p.noGenderRestriction);
+    
+    const genderTotals = genderRestrictedPlayers.reduce((acc, player) => {
         acc[player.gender] = (acc[player.gender] ?? 0) + 1;
         return acc;
     }, createGenderCount());
@@ -45,7 +44,7 @@ const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender,
     GENDER_KEYS.forEach(gender => {
         const total = genderTotals[gender];
         if (total === 0) {
-            distributionOrder.forEach(color => {
+            TEAM_COLORS_LIST.forEach(color => {
                 template[color][gender] = 0;
             });
             return;
@@ -53,7 +52,7 @@ const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender,
 
         const base = Math.floor(total / colorCount);
         const remainder = total % colorCount;
-        distributionOrder.forEach((color, idx) => {
+        TEAM_COLORS_LIST.forEach((color, idx) => {
             template[color][gender] = base + (idx < remainder ? 1 : 0);
         });
     });
@@ -61,32 +60,6 @@ const buildGenderTargets = (players: Player[]): Record<TeamColor, Record<Gender,
     return template;
 };
 
-const buildForcedTargets = (players: Player[]): Record<TeamColor, number> => {
-    const template = TEAM_COLORS_LIST.reduce((acc, color) => {
-        acc[color] = 0;
-        return acc;
-    }, {} as Record<TeamColor, number>);
-
-    const forcedPlayers = players.filter(p => p.forceFirstMatch);
-    const totalForced = forcedPlayers.length;
-    const colorCount = TEAM_COLORS_LIST.length;
-    if (totalForced === 0 || colorCount === 0) return template;
-
-    const seed = forcedPlayers.reduce((acc, player, idx) => {
-        const code = player.name?.charCodeAt(0) ?? 0;
-        return acc + code + idx;
-    }, 0);
-    const distributionOrder = rotateArray(TEAM_COLORS_LIST, seed % colorCount);
-
-    const base = Math.floor(totalForced / colorCount);
-    const remainder = totalForced % colorCount;
-
-    distributionOrder.forEach((color, idx) => {
-        template[color] = base + (idx < remainder ? 1 : 0);
-    });
-
-    return template;
-};
 
 export const LotteryPhase: React.FC<{
   players: Player[]; // All registered players
@@ -104,7 +77,8 @@ export const LotteryPhase: React.FC<{
   // Animation State
   const [currentTeamColor, setCurrentTeamColor] = useState<TeamColor | null>(null);
     const [teamQueue, setTeamQueue] = useState<TeamColor[]>(TEAM_COLORS_LIST);
-  const [phase, setPhase] = useState<'IDLE' | 'FIRST_TEAM_INTRO' | 'DRAFTING' | 'SUMMARY' | 'NEXT_TEAM_PREVIEW' | 'FINAL_RECAP'>('IDLE');
+  const [phase, setPhase] = useState<'IDLE' | 'FIRST_TEAM_INTRO' | 'DRAFTING' | 'SUMMARY' | 'NEXT_TEAM_PREVIEW' | 'LAST_TEAM_ASSIGN' | 'FINAL_RECAP'>('IDLE');
+  const [lastTeamInfo, setLastTeamInfo] = useState<{ color: TeamColor; members: Player[] } | null>(null);
   const [introTeamColor, setIntroTeamColor] = useState<TeamColor | null>(null);
   
   // Drafting Logic
@@ -118,7 +92,9 @@ export const LotteryPhase: React.FC<{
   const [completedTeams, setCompletedTeams] = useState<Team[]>([]);
 
     const genderTargets = useMemo(() => buildGenderTargets(players), [players]);
-    const forcedTargets = useMemo(() => buildForcedTargets(players), [players]);
+    
+    // Count total flexible players
+    const flexiblePlayerCount = useMemo(() => players.filter(p => p.noGenderRestriction).length, [players]);
   
   // Audio Refs
   const tickAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -149,38 +125,29 @@ export const LotteryPhase: React.FC<{
   }, [players, initialTeams]);
 
   // --- Logic: Pick Players ---
+  // Flexible ("0" marked) players should go to teams that are SHORT on players
+  // to fill empty slots in matchups
     const pickBatch = (pool: Player[], color: TeamColor, snapshotTeams: Team[]): Player[] => {
         const targetByGender = genderTargets[color] || createGenderCount();
-        const desiredTeamSize = (Object.values(targetByGender) as number[]).reduce((sum, count) => sum + count, 0);
+        
+        // Calculate base team size from gender targets (without flexible)
+        const genderBasedSize = (Object.values(targetByGender) as number[]).reduce((sum, count) => sum + count, 0);
+        
         const currentTeam = snapshotTeams.find(t => t.color === color);
         const assignedMembers = currentTeam?.members ?? [];
 
-        if (desiredTeamSize <= assignedMembers.length) {
-            return [];
-        }
-
+        // Count already assigned by gender (excluding flexible players)
         const assignedCounts = assignedMembers.reduce((acc, member) => {
-            acc[member.gender] = (acc[member.gender] ?? 0) + 1;
+            if (!member.noGenderRestriction) {
+                acc[member.gender] = (acc[member.gender] ?? 0) + 1;
+            }
             return acc;
         }, createGenderCount());
-
-        const assignedForced = assignedMembers.filter(m => m.forceFirstMatch).length;
-        const forcedTarget = forcedTargets[color] ?? 0;
-        const forcedNeeded = Math.max(forcedTarget - assignedForced, 0);
 
         const usedIds = new Set<string>();
         let batch: Player[] = [];
 
-        if (forcedNeeded > 0) {
-            const forcedPool = pool.filter(p => p.forceFirstMatch && !usedIds.has(p.id));
-            const forcedPicks = shufflePlayers(forcedPool).slice(0, forcedNeeded);
-            forcedPicks.forEach(player => {
-                usedIds.add(player.id);
-                assignedCounts[player.gender] = (assignedCounts[player.gender] ?? 0) + 1;
-            });
-            batch = batch.concat(forcedPicks);
-        }
-
+        // First, pick gender-restricted players to meet gender targets
         const neededCounts = GENDER_KEYS.reduce((acc, gender) => {
             acc[gender] = Math.max((targetByGender[gender] ?? 0) - (assignedCounts[gender] ?? 0), 0);
             return acc;
@@ -189,7 +156,8 @@ export const LotteryPhase: React.FC<{
         GENDER_KEYS.forEach(gender => {
             const needed = neededCounts[gender];
             if (needed <= 0) return;
-            const available = pool.filter(p => p.gender === gender && !usedIds.has(p.id) && !p.forceFirstMatch);
+            // Only pick non-flexible players for gender slots
+            const available = pool.filter(p => p.gender === gender && !usedIds.has(p.id) && !p.noGenderRestriction);
             const picks = shufflePlayers(available).slice(0, needed);
             picks.forEach(player => {
                 usedIds.add(player.id);
@@ -198,12 +166,31 @@ export const LotteryPhase: React.FC<{
             batch = batch.concat(picks);
         });
 
-        const teamCurrentSize = assignedMembers.length;
-        const targetBatchSize = Math.max(desiredTeamSize - teamCurrentSize, 0);
-
-        if (batch.length < targetBatchSize) {
-            const remainder = shufflePlayers(pool.filter(p => !usedIds.has(p.id) && !p.forceFirstMatch));
-            batch = batch.concat(remainder.slice(0, targetBatchSize - batch.length));
+        // Calculate how many flexible players THIS team should get
+        // Flexible players go to teams that will be SHORT (缺人)
+        // We need to figure out if this team needs flexible players to match the max team size
+        
+        // Calculate what each team's gender-based size is
+        const teamGenderSizes = TEAM_COLORS_LIST.map(c => {
+            const target = genderTargets[c] || createGenderCount();
+            return (Object.values(target) as number[]).reduce((sum, count) => sum + count, 0);
+        });
+        const maxGenderBasedSize = Math.max(...teamGenderSizes);
+        
+        // This team's shortage compared to max
+        const thisTeamShortage = maxGenderBasedSize - genderBasedSize;
+        
+        // How many flexible players are available?
+        const flexibleInPool = pool.filter(p => p.noGenderRestriction && !usedIds.has(p.id));
+        
+        // Assign flexible players to fill the shortage
+        if (thisTeamShortage > 0 && flexibleInPool.length > 0) {
+            const flexibleNeeded = Math.min(thisTeamShortage, flexibleInPool.length);
+            const flexiblePicks = shufflePlayers(flexibleInPool).slice(0, flexibleNeeded);
+            flexiblePicks.forEach(player => {
+                usedIds.add(player.id);
+            });
+            batch = batch.concat(flexiblePicks);
         }
 
         return batch;
@@ -441,8 +428,7 @@ export const LotteryPhase: React.FC<{
 
   const confirmTeam = () => {
     if (!currentTeamColor) return;
-    const newTeams = teams.map(t => t.color === currentTeamColor ? { ...t, members: lockedPlayers } : t);
-    setTeams(newTeams);
+    let newTeams = teams.map(t => t.color === currentTeamColor ? { ...t, members: lockedPlayers } : t);
     
     // Track completed team for recap
     const completedTeam = newTeams.find(t => t.color === currentTeamColor);
@@ -452,17 +438,59 @@ export const LotteryPhase: React.FC<{
     
     if (unassignedPlayers.length === 0) {
       // Show final recap before completing
+      setTeams(newTeams);
       setPhase('FINAL_RECAP');
     } else {
       // Find next team color for preview
       const remainingColors = teamQueue.filter(c => newTeams.find(t => t.color === c)?.members.length === 0);
-      if (remainingColors.length > 0) {
+      
+      if (remainingColors.length === 1) {
+        // LAST TEAM: Show combined summary with both Pink (just confirmed) and Purple (auto-assigned)
+        const lastTeamColor = remainingColors[0];
+        const remainingPlayers = [...unassignedPlayers];
+        
+        // Auto-assign all remaining players to the last team
+        newTeams = newTeams.map(t => t.color === lastTeamColor ? { ...t, members: remainingPlayers } : t);
+        setTeams(newTeams);
+        
+        // Update visual map so Purple tiles light up on the grid
+        setAssignedMap(prev => {
+          const m = { ...prev };
+          remainingPlayers.forEach(p => m[p.id] = lastTeamColor);
+          return m;
+        });
+        
+        setUnassignedPlayers([]);
+        
+        // Keep current team as the one just confirmed (Pink), store last team info
+        // This way both teams' tiles show on the grid
+        setLastTeamInfo({ color: lastTeamColor, members: remainingPlayers });
+        
+        // Set lockedPlayers to the last team's members for display
+        setLockedPlayers(remainingPlayers);
+        
+        // Play a subtle sound
+        if (!isMuted && boomAudioRef.current) {
+          boomAudioRef.current.currentTime = 0;
+          boomAudioRef.current.play().catch(() => {});
+        }
+        
+        // First go to IDLE briefly so user can see both teams' tiles light up
+        setPhase('IDLE');
+        
+        // Then show the combined summary after a delay
+        setTimeout(() => {
+          setPhase('LAST_TEAM_ASSIGN');
+        }, 1200);
+      } else if (remainingColors.length > 1) {
+        setTeams(newTeams);
         setNextTeamColor(remainingColors[0]);
         setCurrentTeamColor(null);
         setLockedPlayers([]);
         setPhase('NEXT_TEAM_PREVIEW');
-        // User will click INITIATE to proceed
+        // User will click BEGIN SELECTION to proceed
       } else {
+        setTeams(newTeams);
         setCurrentTeamColor(null);
         setLockedPlayers([]);
         setPhase('IDLE');
@@ -735,7 +763,13 @@ export const LotteryPhase: React.FC<{
                         const teamColor = assignedMap[player.id];
                         const isDecoy = decoyIds.includes(player.id);
                         const isSlam = slamPlayerId === player.id;
-                        const isPreviousTeam = isAssigned && teamColor !== currentTeamColor;
+                        
+                        // During LAST_TEAM_ASSIGN, both currentTeamColor AND lastTeamInfo.color should be "current"
+                        const isCurrentTeam = isAssigned && (
+                          teamColor === currentTeamColor || 
+                          (phase === 'LAST_TEAM_ASSIGN' && lastTeamInfo && teamColor === lastTeamInfo.color)
+                        );
+                        const isPreviousTeam = isAssigned && !isCurrentTeam;
                         
                         // Determine Style
                         let bgStyle: React.CSSProperties = { backgroundColor: '#2e2e2e' };
@@ -756,7 +790,6 @@ export const LotteryPhase: React.FC<{
                         
                         if (isAssigned) {
                             const config = TEAM_CONFIG[teamColor];
-                            const isCurrentTeam = teamColor === currentTeamColor;
                             
                             if (isCurrentTeam) {
                               // Current drafting team - full color, normal size
@@ -878,7 +911,7 @@ export const LotteryPhase: React.FC<{
                    unassignedPlayers.length > 0 && phase !== 'SUMMARY' && phase !== 'FIRST_TEAM_INTRO' && (
                       <div className="flex gap-4">
                         <Button onClick={startNextTeam} className="py-3 px-8 text-lg shadow-[0_0_20px_rgba(237,27,118,0.3)] hover:shadow-[0_0_30px_rgba(237,27,118,0.6)] hover:scale-105 transition-all border-2 border-squid-pink bg-black/50 hover:bg-squid-pink text-white backdrop-blur-sm">
-                          INITIATE
+                          START
                         </Button>
                         {unassignedPlayers.length > 5 && (
                           <Button onClick={quickFinish} variant="secondary" className="py-3 px-6 text-sm bg-black/50 border border-gray-700 hover:bg-gray-800 text-gray-400 backdrop-blur-sm">
@@ -912,7 +945,7 @@ export const LotteryPhase: React.FC<{
                     >
                       TEAM {currentTeamColor}
                     </h1>
-                    <p className="text-gray-500 text-sm mt-2 tracking-widest">{lockedPlayers.length} MEMBERS RECRUITED</p>
+                    <p className="text-gray-500 text-sm mt-2 tracking-widest">{lockedPlayers.length} MEMBERS</p>
                 </div>
                 
                 {/* Player List - Name First */}
@@ -1187,7 +1220,7 @@ export const LotteryPhase: React.FC<{
                          />
                        ))}
                      </div>
-                     <span className="text-gray-400 text-sm uppercase tracking-[0.3em]">INITIALIZING DRAFT</span>
+                     <span className="text-gray-400 text-sm uppercase tracking-[0.3em]">PREPARING DRAFT</span>
                      <div className="flex gap-1">
                        {[0, 1, 2].map(i => (
                          <div 
@@ -1455,6 +1488,56 @@ export const LotteryPhase: React.FC<{
                  />
                </Button>
                
+               {/* Skip Button */}
+               <button
+                 onClick={() => {
+                   // Skip this team - auto-assign and move to next
+                   if (!nextTeamColor) return;
+                   const winners = pickBatch(unassignedPlayers, nextTeamColor, teams);
+                   const newTeams = teams.map(t => t.color === nextTeamColor ? { ...t, members: winners } : t);
+                   setTeams(newTeams);
+                   
+                   const winnerIds = new Set(winners.map(w => w.id));
+                   const remaining = unassignedPlayers.filter(p => !winnerIds.has(p.id));
+                   setUnassignedPlayers(remaining);
+                   
+                   // Update assigned map
+                   setAssignedMap(prev => {
+                     const updated = { ...prev };
+                     winners.forEach(w => { updated[w.id] = nextTeamColor; });
+                     return updated;
+                   });
+                   
+                   // Find next team
+                   const remainingColors = teamQueue.filter(c => newTeams.find(t => t.color === c)?.members.length === 0);
+                   
+                   if (remaining.length === 0 || remainingColors.length === 0) {
+                     setNextTeamColor(null);
+                     setPhase('FINAL_RECAP');
+                   } else if (remainingColors.length === 1) {
+                     // Last team - auto-assign all remaining
+                     const lastColor = remainingColors[0];
+                     const finalTeams = newTeams.map(t => t.color === lastColor ? { ...t, members: remaining } : t);
+                     setTeams(finalTeams);
+                     setUnassignedPlayers([]);
+                     setAssignedMap(prev => {
+                       const updated = { ...prev };
+                       remaining.forEach(p => { updated[p.id] = lastColor; });
+                       return updated;
+                     });
+                     setNextTeamColor(null);
+                     setPhase('FINAL_RECAP');
+                   } else {
+                     // Move to next team preview
+                     setNextTeamColor(remainingColors[0]);
+                   }
+                 }}
+                 className="mt-3 text-gray-500 text-xs uppercase tracking-widest hover:text-gray-300 transition-colors animate-fade-in"
+                 style={{ animationDelay: '1.4s', animationFillMode: 'backwards' }}
+               >
+                 Skip Team →
+               </button>
+               
                {/* Bottom Decorative Element */}
                <div 
                  className="mt-8 flex items-center gap-2 animate-fade-in"
@@ -1470,6 +1553,153 @@ export const LotteryPhase: React.FC<{
                    />
                  ))}
                </div>
+             </div>
+          </div>
+       )}
+
+       {/* LAST TEAM ASSIGNMENT - Same modal style as SUMMARY but showing both teams */}
+       {phase === 'LAST_TEAM_ASSIGN' && lastTeamInfo && currentTeamColor && (
+          <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+             <div className="relative w-full max-w-5xl bg-gradient-to-b from-gray-900 to-black border border-gray-700 rounded-lg shadow-[0_0_100px_rgba(0,0,0,1)] overflow-hidden flex flex-col max-h-[90vh] animate-slam">
+                
+                {/* Header with both team emblems */}
+                <div className="w-full py-6 flex flex-col items-center relative">
+                    <div className="flex items-center gap-8 mb-4">
+                      {/* Pink Team Emblem */}
+                      <div 
+                        className="w-16 h-16 rotate-45 flex items-center justify-center border-4 shadow-[0_0_30px_currentColor]"
+                        style={{ backgroundColor: TEAM_CONFIG[currentTeamColor].hex, borderColor: 'white', color: TEAM_CONFIG[currentTeamColor].hex }}
+                      >
+                        <span className="-rotate-45 text-white font-display text-xl uppercase">
+                          {currentTeamColor.charAt(0)}
+                        </span>
+                      </div>
+                      
+                      <span className="text-gray-500 font-display text-2xl">&</span>
+                      
+                      {/* Purple Team Emblem */}
+                      <div 
+                        className="w-16 h-16 rotate-45 flex items-center justify-center border-4 shadow-[0_0_30px_currentColor]"
+                        style={{ backgroundColor: TEAM_CONFIG[lastTeamInfo.color].hex, borderColor: 'white', color: TEAM_CONFIG[lastTeamInfo.color].hex }}
+                      >
+                        <span className="-rotate-45 text-white font-display text-xl uppercase">
+                          {lastTeamInfo.color.charAt(0)}
+                        </span>
+                      </div>
+                    </div>
+                    <h1 className="font-display text-3xl md:text-4xl uppercase tracking-[0.3em] text-white">
+                      FINAL TEAMS
+                    </h1>
+                    <p className="text-gray-500 text-sm mt-2 tracking-widest">DRAFT COMPLETE</p>
+                </div>
+                
+                {/* Player Lists - Two columns */}
+                <div className="flex-1 overflow-y-auto px-6 pb-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      
+                      {/* Pink Team Column */}
+                      <div>
+                        <div 
+                          className="flex items-center gap-3 mb-4 pb-2 border-b"
+                          style={{ borderColor: `${TEAM_CONFIG[currentTeamColor].hex}40` }}
+                        >
+                          <span 
+                            className="font-display text-xl uppercase tracking-wider"
+                            style={{ color: TEAM_CONFIG[currentTeamColor].hex }}
+                          >
+                            Team {currentTeamColor}
+                          </span>
+                          <span className="text-gray-500 text-xs">
+                            {teams.find(t => t.color === currentTeamColor)?.members.length || 0} MEMBERS
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          {teams.find(t => t.color === currentTeamColor)?.members.map((p, i) => (
+                            <div 
+                              key={p.id} 
+                              className="flex items-center gap-4 p-3 bg-white/5 rounded-lg border border-white/10 animate-pop-in hover:bg-white/10 transition-colors"
+                              style={{ animationDelay: `${i * 30}ms`, animationFillMode: 'backwards' }}
+                            >
+                              <div 
+                                className="w-10 h-10 rotate-45 flex-shrink-0 flex items-center justify-center border-2"
+                                style={{ backgroundColor: TEAM_CONFIG[currentTeamColor].hex, borderColor: 'rgba(255,255,255,0.5)' }}
+                              >
+                                <span className="-rotate-45 text-white font-mono text-xs font-bold">
+                                  {String(sortedPlayers.findIndex(sp => sp.id === p.id) + 1).padStart(3, '0')}
+                                </span>
+                              </div>
+                              <div className="flex flex-col flex-1 min-w-0">
+                                <span className="text-white font-display text-base uppercase tracking-wide truncate">
+                                  {p.name}
+                                </span>
+                                <span className="text-gray-500 text-xs uppercase tracking-widest">
+                                  {p.gender === 'M' ? 'Male' : p.gender === 'F' ? 'Female' : 'Non-Binary'}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      
+                      {/* Purple Team Column */}
+                      <div>
+                        <div 
+                          className="flex items-center gap-3 mb-4 pb-2 border-b"
+                          style={{ borderColor: `${TEAM_CONFIG[lastTeamInfo.color].hex}40` }}
+                        >
+                          <span 
+                            className="font-display text-xl uppercase tracking-wider"
+                            style={{ color: TEAM_CONFIG[lastTeamInfo.color].hex }}
+                          >
+                            Team {lastTeamInfo.color}
+                          </span>
+                          <span className="text-gray-500 text-xs">
+                            {lastTeamInfo.members.length} MEMBERS
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          {lastTeamInfo.members.map((p, i) => (
+                            <div 
+                              key={p.id} 
+                              className="flex items-center gap-4 p-3 bg-white/5 rounded-lg border border-white/10 animate-pop-in hover:bg-white/10 transition-colors"
+                              style={{ animationDelay: `${100 + i * 30}ms`, animationFillMode: 'backwards' }}
+                            >
+                              <div 
+                                className="w-10 h-10 rotate-45 flex-shrink-0 flex items-center justify-center border-2"
+                                style={{ backgroundColor: TEAM_CONFIG[lastTeamInfo.color].hex, borderColor: 'rgba(255,255,255,0.5)' }}
+                              >
+                                <span className="-rotate-45 text-white font-mono text-xs font-bold">
+                                  {String(sortedPlayers.findIndex(sp => sp.id === p.id) + 1).padStart(3, '0')}
+                                </span>
+                              </div>
+                              <div className="flex flex-col flex-1 min-w-0">
+                                <span className="text-white font-display text-base uppercase tracking-wide truncate">
+                                  {p.name}
+                                </span>
+                                <span className="text-gray-500 text-xs uppercase tracking-widest">
+                                  {p.gender === 'M' ? 'Male' : p.gender === 'F' ? 'Female' : 'Non-Binary'}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div className="p-6 border-t border-gray-800 flex justify-center bg-black/50">
+                     <Button 
+                       onClick={() => {
+                         setLastTeamInfo(null);
+                         setCurrentTeamColor(null);
+                         setPhase('FINAL_RECAP');
+                       }} 
+                       className="px-16 py-4 text-xl border-2 bg-transparent hover:text-black transition-all border-squid-pink text-squid-pink hover:bg-squid-pink"
+                     >
+                        VIEW ALL TEAMS
+                     </Button>
+                </div>
              </div>
           </div>
        )}

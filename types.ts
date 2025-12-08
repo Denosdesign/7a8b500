@@ -10,7 +10,7 @@ export interface Player {
   name: string;
   gender: Gender;
   score: number;
-  forceFirstMatch?: boolean;
+  noGenderRestriction?: boolean; // "0" marker - can go to either male or female games
 }
 
 export interface ParsedPlayerResponse {

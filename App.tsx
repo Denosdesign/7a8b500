@@ -139,10 +139,10 @@ const App: React.FC = () => {
 
     type TeamPool = {
       color: TeamColor;
-      forced: Player[];
       males: Player[];
       females: Player[];
       nonBinary: Player[];
+      flexible: Player[]; // Players with noGenderRestriction - can fill ANY empty slot
     };
 
     const poolsByColor: Record<TeamColor, TeamPool> = {} as Record<TeamColor, TeamPool>;
@@ -150,91 +150,146 @@ const App: React.FC = () => {
     Object.values(TeamColor).forEach(color => {
       const team = currentTeams.find(t => t.color === color);
       const members = team ? [...team.members] : [];
-      const forced = members.filter(m => m.forceFirstMatch);
-      const available = members.filter(m => !m.forceFirstMatch);
+      
+      // Separate flexible (noGenderRestriction) players from gender-specific players
+      const flexible = members.filter(m => m.noGenderRestriction);
+      const genderSpecific = members.filter(m => !m.noGenderRestriction);
 
       poolsByColor[color] = {
         color,
-        forced,
-        males: randomize(available.filter(m => m.gender === Gender.Male)),
-        females: randomize(available.filter(m => m.gender === Gender.Female)),
-        nonBinary: randomize(available.filter(m => m.gender === Gender.NonBinary))
+        males: randomize(genderSpecific.filter(m => m.gender === Gender.Male)),
+        females: randomize(genderSpecific.filter(m => m.gender === Gender.Female)),
+        nonBinary: randomize(genderSpecific.filter(m => m.gender === Gender.NonBinary)),
+        flexible: randomize(flexible)
       };
     });
 
     const orderedPools = Object.values(TeamColor).map(color => poolsByColor[color]);
-    const hasForced = orderedPools.some(pool => pool.forced.length > 0);
     const matchups: Matchup[] = [];
 
-    if (hasForced) {
-      const firstRowPlayers: MatchupPlayer[] = Object.values(TeamColor).map(color => {
-        const pool = poolsByColor[color];
-        if (!pool) {
-          return { color, player: null };
-        }
-        const player =
-          pool.forced.shift() ||
-          pool.males.shift() ||
-          pool.females.shift() ||
-          pool.nonBinary.shift() ||
-          null;
-        return { color, player };
-      });
-
-      if (firstRowPlayers.some(entry => entry.player)) {
-        matchups.push({ id: 1, players: firstRowPlayers });
-      }
-    }
-
+    // Calculate max rows needed - flexible players can fill any gender slot
+    // Find the team with the most total players (males + females + flexible)
     const maxCounts = orderedPools.reduce(
       (acc, pool) => {
+        // For male/female rows, count gender-specific + all flexible that could potentially fill
         acc.maxMales = Math.max(acc.maxMales, pool.males.length);
         acc.maxFemales = Math.max(acc.maxFemales, pool.females.length);
         acc.maxNonBinary = Math.max(acc.maxNonBinary, pool.nonBinary.length);
+        acc.maxFlexible = Math.max(acc.maxFlexible, pool.flexible.length);
         return acc;
       },
-      { maxMales: 0, maxFemales: 0, maxNonBinary: 0 }
+      { maxMales: 0, maxFemales: 0, maxNonBinary: 0, maxFlexible: 0 }
     );
+
+    // Total rows needed = max(males) + max(females) + max(nonBinary) + extra rows for flexible
+    // But flexible should fill gaps, not create new rows
 
     let maleRowIndex = 0;
     let femaleRowIndex = 0;
     let nonBinaryRowIndex = 0;
-    let isMaleRow = true;
+    let preferMale = true;
+
+    // Track used flexible players per team (mutable arrays for shifting)
+    const flexibleQueues: Record<TeamColor, Player[]> = {} as Record<TeamColor, Player[]>;
+    Object.values(TeamColor).forEach(color => {
+      flexibleQueues[color] = [...poolsByColor[color].flexible];
+    });
+
+    // Helper to get next available player, using flexible to fill empty slots
+    const getNextPlayer = (pool: TeamPool, gender: 'male' | 'female' | 'nonBinary', currentIndex: number): Player | null => {
+      let genderArray: Player[];
+      if (gender === 'male') genderArray = pool.males;
+      else if (gender === 'female') genderArray = pool.females;
+      else genderArray = pool.nonBinary;
+      
+      if (currentIndex < genderArray.length) {
+        return genderArray[currentIndex];
+      }
+      
+      // No gender-specific player available - try to use a flexible player to fill the gap
+      const flexQueue = flexibleQueues[pool.color];
+      if (flexQueue.length > 0) {
+        return flexQueue.shift()!; // Use and remove from queue
+      }
+      
+      return null;
+    };
+
+    // Determine how many rows we actually need
+    const totalMaleRows = maxCounts.maxMales;
+    const totalFemaleRows = maxCounts.maxFemales;
+    const totalNonBinaryRows = maxCounts.maxNonBinary;
 
     while (
-      maleRowIndex < maxCounts.maxMales ||
-      femaleRowIndex < maxCounts.maxFemales ||
-      nonBinaryRowIndex < maxCounts.maxNonBinary
+      maleRowIndex < totalMaleRows ||
+      femaleRowIndex < totalFemaleRows ||
+      nonBinaryRowIndex < totalNonBinaryRows
     ) {
       const rowPlayers: MatchupPlayer[] = [];
+      let addedRow = false;
 
-      if (isMaleRow && maleRowIndex < maxCounts.maxMales) {
+      // Try to alternate between male and female, falling back if one is exhausted
+      if (preferMale && maleRowIndex < totalMaleRows) {
         Object.values(TeamColor).forEach(color => {
           const pool = poolsByColor[color];
-          rowPlayers.push({ color, player: pool?.males[maleRowIndex] ?? null });
+          rowPlayers.push({ color, player: getNextPlayer(pool, 'male', maleRowIndex) });
         });
         maleRowIndex++;
-      } else if (!isMaleRow && femaleRowIndex < maxCounts.maxFemales) {
+        addedRow = true;
+        preferMale = false;
+      } else if (!preferMale && femaleRowIndex < totalFemaleRows) {
         Object.values(TeamColor).forEach(color => {
           const pool = poolsByColor[color];
-          rowPlayers.push({ color, player: pool?.females[femaleRowIndex] ?? null });
+          rowPlayers.push({ color, player: getNextPlayer(pool, 'female', femaleRowIndex) });
         });
         femaleRowIndex++;
-      } else if (nonBinaryRowIndex < maxCounts.maxNonBinary) {
+        addedRow = true;
+        preferMale = true;
+      } else if (maleRowIndex < totalMaleRows) {
         Object.values(TeamColor).forEach(color => {
           const pool = poolsByColor[color];
-          rowPlayers.push({ color, player: pool?.nonBinary[nonBinaryRowIndex] ?? null });
+          rowPlayers.push({ color, player: getNextPlayer(pool, 'male', maleRowIndex) });
+        });
+        maleRowIndex++;
+        addedRow = true;
+      } else if (femaleRowIndex < totalFemaleRows) {
+        Object.values(TeamColor).forEach(color => {
+          const pool = poolsByColor[color];
+          rowPlayers.push({ color, player: getNextPlayer(pool, 'female', femaleRowIndex) });
+        });
+        femaleRowIndex++;
+        addedRow = true;
+      } else if (nonBinaryRowIndex < totalNonBinaryRows) {
+        Object.values(TeamColor).forEach(color => {
+          const pool = poolsByColor[color];
+          rowPlayers.push({ color, player: getNextPlayer(pool, 'nonBinary', nonBinaryRowIndex) });
         });
         nonBinaryRowIndex++;
-      } else {
-        break;
+        addedRow = true;
       }
+
+      if (!addedRow) break;
 
       if (rowPlayers.some(entry => entry.player)) {
         matchups.push({ id: matchups.length + 1, players: rowPlayers });
       }
+    }
 
-      isMaleRow = !isMaleRow;
+    // After all gender rows, if there are still unused flexible players, add extra rows
+    // Check if any team still has flexible players
+    let hasRemainingFlexible = Object.values(flexibleQueues).some(q => q.length > 0);
+    while (hasRemainingFlexible) {
+      const rowPlayers: MatchupPlayer[] = [];
+      Object.values(TeamColor).forEach(color => {
+        const flexQueue = flexibleQueues[color];
+        rowPlayers.push({ color, player: flexQueue.shift() || null });
+      });
+      
+      if (rowPlayers.some(entry => entry.player)) {
+        matchups.push({ id: matchups.length + 1, players: rowPlayers });
+      }
+      
+      hasRemainingFlexible = Object.values(flexibleQueues).some(q => q.length > 0);
     }
 
     if (matchups.length === 0) {
