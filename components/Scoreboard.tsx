@@ -4,6 +4,8 @@ import { Team } from '../types';
 import { TEAM_CONFIG } from '../constants';
 import { getAverageScore, formatAverageScore } from '../utils';
 
+const getTotalScore = (team: Team): number => team.score || 0;
+
 interface ScoreboardProps {
   teams: Team[];
   condensed?: boolean;
@@ -107,6 +109,7 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
     });
     return initial;
   });
+  const [showTotalScore, setShowTotalScore] = useState(false);
   const latestDisplayRef = useRef(displayScores);
 
   useEffect(() => {
@@ -116,12 +119,14 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
   useEffect(() => {
     if (typeof window === 'undefined' || teams.length === 0) return;
 
+    const getScoreValue = (team: Team) => showTotalScore ? getTotalScore(team) : getAverageScore(team);
+
     const startValues: Record<string, number> = {};
     const endValues: Record<string, number> = {};
 
     teams.forEach((team) => {
       const color = team.color;
-      const endValue = getAverageScore(team);
+      const endValue = getScoreValue(team);
       const startValue = latestDisplayRef.current[color] ?? endValue;
       startValues[color] = startValue;
       endValues[color] = endValue;
@@ -153,10 +158,11 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
 
     raf = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(raf);
-  }, [teams]);
+  }, [teams, showTotalScore]);
 
   // --- SCALING LOGIC ---
-  const scores = teams.map(team => getAverageScore(team));
+  const getScoreValue = (team: Team) => showTotalScore ? getTotalScore(team) : getAverageScore(team);
+  const scores = teams.map(team => getScoreValue(team));
   const currentMax = scores.length ? Math.max(...scores) : 0;
   const currentMin = scores.length ? Math.min(...scores) : 0;
   const spread = currentMax - currentMin;
@@ -181,12 +187,12 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
   const visualRange = Math.max(scaleMax - scaleMin, 1);
 
   // Leader Logic
-  const sortedTeams = [...teams].sort((a, b) => getAverageScore(b) - getAverageScore(a));
+  const sortedTeams = [...teams].sort((a, b) => getScoreValue(b) - getScoreValue(a));
   const leader = sortedTeams[0];
-  const leaderAverage = leader ? getAverageScore(leader) : 0;
+  const leaderScore = leader ? getScoreValue(leader) : 0;
   const isTie =
     sortedTeams.length > 1 &&
-    Math.abs(leaderAverage - getAverageScore(sortedTeams[1])) < 0.001;
+    Math.abs(leaderScore - getScoreValue(sortedTeams[1])) < 0.001;
 
   // STATIC CASH PILE
   // A dense, aesthetically pleasing pile of money inside the sphere
@@ -331,12 +337,22 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
         </div>
       )}
 
+      {/* SCORE MODE TOGGLE BUTTON */}
+      <div className="flex justify-center mb-4 relative z-10">
+        <button
+          onClick={() => setShowTotalScore(!showTotalScore)}
+          className="px-6 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 hover:border-gray-500 text-gray-300 hover:text-white font-mono text-sm uppercase tracking-widest rounded transition-colors"
+        >
+          {showTotalScore ? 'Total Score' : 'Avg Score'}
+        </button>
+      </div>
+
       {/* TEAM BARS */}
       <div className={`grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 px-4 h-[350px] items-end relative z-10 ${condensed ? 'pt-2' : 'pt-10'}`}>
         {teams.map((team) => {
-           const averageScore = getAverageScore(team);
-           const animatedScore = displayScores[team.color] ?? averageScore;
-           const roundedAverage = Math.round(animatedScore);
+           const score = getScoreValue(team);
+           const animatedScore = displayScores[team.color] ?? score;
+           const roundedScore = Math.round(animatedScore);
            const rawPercent = (animatedScore - scaleMin) / visualRange;
            const heightPercent = Math.min(Math.max(rawPercent * 100, 2), 100); // Clamp 2%-100%
            const isLeader = leader && team.color === leader.color && !isTie;
@@ -346,9 +362,9 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ teams, condensed = false
                <div
                  className="text-center font-display text-2xl mb-2 transition-all"
                  style={{ color: TEAM_CONFIG[team.color].hex, textShadow: `0 0 18px ${TEAM_CONFIG[team.color].hex}` }}
-                 title={`Average: ${formatAverageScore(animatedScore)}`}
+                 title={`${showTotalScore ? 'Total' : 'Average'}: ${showTotalScore ? animatedScore.toFixed(0) : formatAverageScore(animatedScore)}`}
                >
-                 {roundedAverage}
+                 {roundedScore}
                </div>
                <div className="relative w-full h-full flex flex-col justify-end">
                  {isLeader && (
