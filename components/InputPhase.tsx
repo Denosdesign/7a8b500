@@ -19,7 +19,7 @@ export const InputPhase: React.FC<{
   const [singleGender, setSingleGender] = useState<Gender>(Gender.Male);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const parseNoGenderRestriction = (raw: unknown): boolean => {
+  const parseFlexibleMarker = (raw: unknown): boolean => {
     if (typeof raw === 'boolean') return raw;
     if (typeof raw === 'number') return raw === 0;
     if (typeof raw === 'string') {
@@ -39,6 +39,19 @@ export const InputPhase: React.FC<{
     return false;
   };
 
+  const parseHelperMarker = (raw: unknown): boolean => {
+    if (typeof raw !== 'string') return false;
+    const normalized = raw.replace(/["']/g, '').trim().toLowerCase();
+    if (!normalized) return false;
+    const tokens = normalized.split(/[\s,;|/]+/).filter(Boolean);
+    return tokens.some(token => token === 'h' || token === 'helper' || token === 'help');
+  };
+
+  const parsePlayerMarkers = (raw: unknown): { noGenderRestriction: boolean; isHelper: boolean } => ({
+    noGenderRestriction: parseFlexibleMarker(raw),
+    isHelper: parseHelperMarker(raw)
+  });
+
   const handleAddSingle = () => {
     if (!singleName.trim()) return;
     const newPlayer: Player = {
@@ -46,7 +59,8 @@ export const InputPhase: React.FC<{
       name: singleName.trim(),
       gender: singleGender,
       score: 0,
-      noGenderRestriction: false
+      noGenderRestriction: false,
+      isHelper: false
     };
     setPlayers([...players, newPlayer]);
     setSingleName('');
@@ -80,13 +94,27 @@ export const InputPhase: React.FC<{
 
         // Check if it's a Player List (Array of Players)
         if (Array.isArray(jsonData)) {
-           const importedPlayers = jsonData.map((p: any) => ({
-             id: p.id || uuidv4(),
-             name: p.name,
-             gender: p.gender || Gender.NonBinary,
-             score: p.score || 0,
-             noGenderRestriction: parseNoGenderRestriction(p.noGenderRestriction)
-           }));
+           const importedPlayers = jsonData.map((p: any) => {
+             const rawMarker = p.marker ?? p.noGenderRestriction ?? '';
+             const markerFlags = parsePlayerMarkers(rawMarker);
+             const noGenderRestriction = typeof p.noGenderRestriction === 'undefined'
+               ? markerFlags.noGenderRestriction
+               : parseFlexibleMarker(p.noGenderRestriction);
+             const helperSources = [p.isHelper, p.helper, rawMarker];
+             const isHelper = helperSources.some(src => {
+               if (typeof src === 'boolean') return src;
+               return parseHelperMarker(src);
+             }) || markerFlags.isHelper;
+
+             return {
+               id: p.id || uuidv4(),
+               name: p.name,
+               gender: p.gender || Gender.NonBinary,
+               score: p.score || 0,
+               noGenderRestriction,
+               isHelper
+             } as Player;
+           });
            setPlayers(prev => [...prev, ...importedPlayers]);
            return;
         }
@@ -106,8 +134,8 @@ export const InputPhase: React.FC<{
                  if (g.startsWith('M')) gender = Gender.Male;
                  else if (g.startsWith('F')) gender = Gender.Female;
                }
-               const noGenderRestriction = parseNoGenderRestriction(markerRaw);
-               csvPlayers.push({ id: uuidv4(), name, gender, score: 0, noGenderRestriction });
+               const markers = parsePlayerMarkers(markerRaw);
+               csvPlayers.push({ id: uuidv4(), name, gender, score: 0, noGenderRestriction: markers.noGenderRestriction, isHelper: markers.isHelper });
              }
           });
           

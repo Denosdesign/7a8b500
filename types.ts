@@ -11,6 +11,7 @@ export interface Player {
   gender: Gender;
   score: number;
   noGenderRestriction?: boolean; // "0" marker - can go to either male or female games
+  isHelper?: boolean; // "H" marker - helper role prioritized for select games
 }
 
 export interface ParsedPlayerResponse {

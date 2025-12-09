@@ -135,7 +135,213 @@ const App: React.FC = () => {
   
   // Helper to generate matchups
   const generateMatchups = (currentTeams: Team[]): Matchup[] => {
-    const randomize = (arr: Player[]) => [...arr].sort(() => Math.random() - 0.5);
+    const shuffleArray = <T,>(arr: T[]): T[] => [...arr].sort(() => Math.random() - 0.5);
+
+    type HelperBucket = 'early' | 'late';
+    type HelperInfo = {
+      player: Player;
+      teamColor: TeamColor;
+      totalPlayers: number;
+    };
+
+    const HELPER_BUCKET_CONFIG: Record<Gender, { earlyIndex: number | null; lateIndex: number | null }> = {
+      [Gender.Male]: { earlyIndex: 0, lateIndex: 2 },
+      [Gender.Female]: { earlyIndex: 0, lateIndex: 1 },
+      [Gender.NonBinary]: { earlyIndex: null, lateIndex: null }
+    };
+
+    const helperBucketAssignments: Partial<Record<string, HelperBucket>> = {};
+    const helperInfosByGender: Record<Gender, HelperInfo[]> = {
+      [Gender.Male]: [],
+      [Gender.Female]: [],
+      [Gender.NonBinary]: []
+    };
+
+    const initGenderCount = () => ({
+      [Gender.Male]: 0,
+      [Gender.Female]: 0,
+      [Gender.NonBinary]: 0
+    });
+
+    const helperBucketCapacities: Record<Gender, { early: number; late: number }> = {
+      [Gender.Male]: { early: 0, late: 0 },
+      [Gender.Female]: { early: 0, late: 0 },
+      [Gender.NonBinary]: { early: 0, late: 0 }
+    };
+
+    const pendingPools: Record<TeamColor, {
+      males: Player[];
+      females: Player[];
+      nonBinary: Player[];
+      flexible: Player[];
+    }> = {} as Record<TeamColor, {
+      males: Player[];
+      females: Player[];
+      nonBinary: Player[];
+      flexible: Player[];
+    }>;
+
+    const genderCountsByTeam: Record<TeamColor, Record<Gender, number>> = {} as Record<TeamColor, Record<Gender, number>>;
+
+    Object.values(TeamColor).forEach(color => {
+      const team = currentTeams.find(t => t.color === color);
+      const members = team ? [...team.members] : [];
+
+      const flexible = members.filter(m => m.noGenderRestriction);
+      const genderSpecific = members.filter(m => !m.noGenderRestriction);
+
+      const males = genderSpecific.filter(m => m.gender === Gender.Male);
+      const females = genderSpecific.filter(m => m.gender === Gender.Female);
+      const nonBinary = genderSpecific.filter(m => m.gender === Gender.NonBinary);
+
+      pendingPools[color] = {
+        males,
+        females,
+        nonBinary,
+        flexible: shuffleArray(flexible)
+      };
+
+      const counts = initGenderCount();
+      counts[Gender.Male] = males.length;
+      counts[Gender.Female] = females.length;
+      counts[Gender.NonBinary] = nonBinary.length;
+      genderCountsByTeam[color] = counts;
+
+      males.forEach(player => {
+        if (player.isHelper) {
+          helperInfosByGender[Gender.Male].push({ player, teamColor: color, totalPlayers: males.length });
+        }
+      });
+
+      females.forEach(player => {
+        if (player.isHelper) {
+          helperInfosByGender[Gender.Female].push({ player, teamColor: color, totalPlayers: females.length });
+        }
+      });
+
+      nonBinary.forEach(player => {
+        if (player.isHelper) {
+          helperInfosByGender[Gender.NonBinary].push({ player, teamColor: color, totalPlayers: nonBinary.length });
+        }
+      });
+    });
+
+    Object.values(TeamColor).forEach(color => {
+      const counts = genderCountsByTeam[color];
+      ([Gender.Male, Gender.Female, Gender.NonBinary] as Gender[]).forEach(gender => {
+        const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
+        if (earlyIndex !== null && counts[gender] > earlyIndex) {
+          helperBucketCapacities[gender].early += 1;
+        }
+        if (lateIndex !== null && counts[gender] > lateIndex) {
+          helperBucketCapacities[gender].late += 1;
+        }
+      });
+    });
+
+    const assignBucketsForGender = (gender: Gender) => {
+      const infos = helperInfosByGender[gender];
+      if (!infos.length) return;
+
+      const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
+      const capacities = helperBucketCapacities[gender];
+      const randomized = shuffleArray(infos);
+      let lateAssigned = 0;
+
+      if (lateIndex !== null && capacities.late > 0) {
+        const lateEligible = randomized.filter(info => info.totalPlayers - 1 >= lateIndex);
+        const lateTarget = Math.min(Math.floor(infos.length / 2), capacities.late, lateEligible.length);
+        if (lateTarget > 0) {
+          shuffleArray(lateEligible)
+            .slice(0, lateTarget)
+            .forEach(info => {
+              helperBucketAssignments[info.player.id] = 'late';
+            });
+          lateAssigned = lateTarget;
+        }
+      }
+
+      if (earlyIndex !== null && capacities.early > 0) {
+        const remaining = randomized.filter(info => !helperBucketAssignments[info.player.id]);
+        const desiredEarly = Math.min(infos.length - lateAssigned, capacities.early, remaining.length);
+        if (desiredEarly > 0) {
+          remaining.slice(0, desiredEarly).forEach(info => {
+            helperBucketAssignments[info.player.id] = 'early';
+          });
+        }
+      }
+    };
+
+    assignBucketsForGender(Gender.Male);
+    assignBucketsForGender(Gender.Female);
+
+    const buildOrderedList = (players: Player[], gender: Gender) => {
+      if (players.length === 0) return [];
+      const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
+
+      if (earlyIndex === null && lateIndex === null) {
+        return shuffleArray(players);
+      }
+
+      const shuffled = shuffleArray(players);
+      const earlyQueue: Player[] = [];
+      const lateQueue: Player[] = [];
+      const regulars: Player[] = [];
+      const helpers: Player[] = [];
+
+      shuffled.forEach(player => {
+        if (player.isHelper) {
+          helpers.push(player);
+        } else {
+          regulars.push(player);
+        }
+      });
+
+      // Assign helpers to early/late buckets
+      let earlyCount = 0;
+      let lateCount = 0;
+      helpers.forEach(helper => {
+        const bucket = helperBucketAssignments[helper.id];
+        if (bucket === 'early' && earlyIndex !== null) {
+          earlyQueue.push(helper);
+          earlyCount++;
+        } else if (bucket === 'late' && lateIndex !== null) {
+          lateQueue.push(helper);
+          lateCount++;
+        } else if (earlyIndex !== null && earlyCount < (helpers.length - lateCount)) {
+          // Distribute unassigned helpers to early
+          earlyQueue.push(helper);
+          earlyCount++;
+        } else if (lateIndex !== null && lateCount < helpers.length) {
+          // Distribute remaining to late
+          lateQueue.push(helper);
+          lateCount++;
+        }
+      });
+
+      const ordered: Player[] = [];
+      for (let idx = 0; idx < shuffled.length; idx++) {
+        let selected: Player | undefined;
+
+        if (earlyIndex !== null && idx === earlyIndex && earlyQueue.length) {
+          selected = earlyQueue.shift();
+        } else if (lateIndex !== null && idx === lateIndex && lateQueue.length) {
+          selected = lateQueue.shift();
+        }
+
+        if (!selected) {
+          // Fill remaining slots with non-helpers only (no helpers outside 1,2,4,5)
+          selected = regulars.shift();
+        }
+
+        if (selected) {
+          ordered.push(selected);
+        }
+      }
+
+      // Ensure no helpers overflow — they only exist in earlyIndex and lateIndex positions
+      return ordered;
+    };
 
     type TeamPool = {
       color: TeamColor;
@@ -148,19 +354,13 @@ const App: React.FC = () => {
     const poolsByColor: Record<TeamColor, TeamPool> = {} as Record<TeamColor, TeamPool>;
 
     Object.values(TeamColor).forEach(color => {
-      const team = currentTeams.find(t => t.color === color);
-      const members = team ? [...team.members] : [];
-      
-      // Separate flexible (noGenderRestriction) players from gender-specific players
-      const flexible = members.filter(m => m.noGenderRestriction);
-      const genderSpecific = members.filter(m => !m.noGenderRestriction);
-
+      const pending = pendingPools[color];
       poolsByColor[color] = {
         color,
-        males: randomize(genderSpecific.filter(m => m.gender === Gender.Male)),
-        females: randomize(genderSpecific.filter(m => m.gender === Gender.Female)),
-        nonBinary: randomize(genderSpecific.filter(m => m.gender === Gender.NonBinary)),
-        flexible: randomize(flexible)
+        males: buildOrderedList(pending.males, Gender.Male),
+        females: buildOrderedList(pending.females, Gender.Female),
+        nonBinary: buildOrderedList(pending.nonBinary, Gender.NonBinary),
+        flexible: shuffleArray(pending.flexible)
       };
     });
 
