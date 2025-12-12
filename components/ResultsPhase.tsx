@@ -1,10 +1,19 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Team, TeamColor, Matchup } from '../types';
+import { Team, TeamColor, Matchup, Player } from '../types';
 import { TEAM_CONFIG } from '../constants';
 import { Button } from './Button';
 import { downloadData, getAverageScore, formatAverageScore } from '../utils';
 import { Scoreboard } from './Scoreboard';
+
+const renumberMatchups = (list: Matchup[]): Matchup[] =>
+   list.map((matchup, index) => ({ ...matchup, id: index + 1 }));
+
+const cloneTeams = (teams: Team[]): Team[] =>
+   teams.map(team => ({
+      ...team,
+      members: team.members.map(member => ({ ...member })),
+   }));
 
 interface FloatingPadProps {
    value: string;
@@ -59,9 +68,283 @@ export const ResultsPhase: React.FC<{
    onOpenRaffle: () => void;
   updateTeamScore: (teamColor: TeamColor, delta: number) => void;
   updatePlayerScore: (teamColor: TeamColor, playerId: string, delta: number) => void;
-}> = ({ teams, matchups, onReset, onViewMatchups, onOpenRaffle, updateTeamScore, updatePlayerScore }) => {
+  onLoadResults?: (teams: Team[], matchups: Matchup[]) => void;
+  onUpdateMatchups?: (matchups: Matchup[]) => void;
+   onUpdateTeams?: (teams: Team[]) => void;
+}> = ({ teams, matchups, onReset, onViewMatchups, onOpenRaffle, updateTeamScore, updatePlayerScore, onLoadResults, onUpdateMatchups, onUpdateTeams }) => {
+   const fileInputRef = useRef<HTMLInputElement>(null);
+
+   const [isEditingMatchOrder, setIsEditingMatchOrder] = useState(false);
+   const [draftMatchups, setDraftMatchups] = useState<Matchup[]>(matchups);
+   const [dragSource, setDragSource] = useState<{ matchIndex: number; color: TeamColor } | null>(null);
+   const [dragTarget, setDragTarget] = useState<{ matchIndex: number; color: TeamColor } | null>(null);
+   const dragSourceRef = useRef<{ matchIndex: number; color: TeamColor } | null>(null);
+   const [draftTeams, setDraftTeams] = useState<Team[]>(cloneTeams(teams));
+
+   useEffect(() => {
+      if (!isEditingMatchOrder) {
+         setDraftMatchups(matchups);
+         setDraftTeams(cloneTeams(teams));
+      }
+   }, [matchups, teams, isEditingMatchOrder]);
+
+   const startMatchOrderEdit = () => {
+      setDraftMatchups(matchups);
+      setDraftTeams(cloneTeams(teams));
+      setIsEditingMatchOrder(true);
+   };
+
+   const cancelMatchOrderEdit = () => {
+      setDraftMatchups(matchups);
+      setDraftTeams(cloneTeams(teams));
+      setIsEditingMatchOrder(false);
+      dragSourceRef.current = null;
+      setDragSource(null);
+      setDragTarget(null);
+   };
+
+   const handleSaveMatchOrder = () => {
+      const normalized = renumberMatchups(draftMatchups);
+      if (onUpdateMatchups) {
+         onUpdateMatchups(normalized);
+      }
+      if (onUpdateTeams) {
+         onUpdateTeams(cloneTeams(draftTeams));
+      }
+      setDraftMatchups(normalized);
+      setIsEditingMatchOrder(false);
+      dragSourceRef.current = null;
+      setDragSource(null);
+      setDragTarget(null);
+   };
+
+   const moveMatchupRow = (index: number, direction: 'up' | 'down') => {
+      setDraftMatchups(prev => {
+         const next = [...prev];
+         const target = direction === 'up' ? index - 1 : index + 1;
+         if (target < 0 || target >= next.length) return prev;
+         [next[index], next[target]] = [next[target], next[index]];
+         return next;
+      });
+   };
+   const updateTeamMemberships = (
+      currentTeams: Team[],
+      sourcePlayer: Player,
+      sourceColor: TeamColor,
+      targetPlayer: Player | null,
+      targetColor: TeamColor
+   ): Team[] => {
+      if (sourceColor === targetColor) return currentTeams;
+
+      return currentTeams.map(team => {
+         if (team.color === sourceColor) {
+            let members = team.members.filter(member => member.id !== sourcePlayer.id);
+            if (targetPlayer && targetColor !== sourceColor) {
+               if (!members.some(member => member.id === targetPlayer.id)) {
+                  members = [...members, targetPlayer];
+               }
+            }
+            return { ...team, members };
+         }
+
+         if (team.color === targetColor) {
+            let members = [...team.members];
+            if (targetPlayer) {
+               members = members.filter(member => member.id !== targetPlayer.id);
+            }
+            if (!members.some(member => member.id === sourcePlayer.id)) {
+               members = [...members, sourcePlayer];
+            }
+            return { ...team, members };
+         }
+
+         return team;
+      });
+   };
+
+   const transferPlayers = (source: { matchIndex: number; color: TeamColor }, target: { matchIndex: number; color: TeamColor }) => {
+      setDraftMatchups(prev => {
+         const sourceMatch = prev[source.matchIndex];
+         const targetMatch = prev[target.matchIndex];
+         if (!sourceMatch || !targetMatch) return prev;
+
+         const sourceEntry = sourceMatch.players.find(p => p.color === source.color);
+         const targetEntry = targetMatch.players.find(p => p.color === target.color);
+         if (!sourceEntry || !sourceEntry.player) return prev;
+
+         if (source.matchIndex === target.matchIndex && source.color === target.color) {
+            return prev;
+         }
+
+         const sourcePlayer = sourceEntry.player;
+         const targetPlayer = targetEntry?.player ?? null;
+
+         const updatedMatchups = prev.map((matchup, idx) => {
+            if (idx === source.matchIndex && idx === target.matchIndex) {
+               return {
+                  ...matchup,
+                  players: matchup.players.map(entry => {
+                     if (entry.color === source.color) return { ...entry, player: targetPlayer };
+                     if (entry.color === target.color) return { ...entry, player: sourcePlayer };
+                     return entry;
+                  })
+               };
+            }
+
+            if (idx === source.matchIndex) {
+               return {
+                  ...matchup,
+                  players: matchup.players.map(entry =>
+                     entry.color === source.color ? { ...entry, player: targetPlayer } : entry
+                  )
+               };
+            }
+
+            if (idx === target.matchIndex) {
+               return {
+                  ...matchup,
+                  players: matchup.players.map(entry =>
+                     entry.color === target.color ? { ...entry, player: sourcePlayer } : entry
+                  )
+               };
+            }
+
+            return matchup;
+         });
+
+         if (source.color !== target.color) {
+            setDraftTeams(prevTeams =>
+               updateTeamMemberships(prevTeams, sourcePlayer, source.color, targetPlayer, target.color)
+            );
+         }
+
+         return updatedMatchups;
+      });
+   };
+
+   const handleDragStart = (event: React.DragEvent<HTMLDivElement>, matchIndex: number, color: TeamColor) => {
+      const payload = { matchIndex, color };
+      if (event.dataTransfer) {
+         const serialized = JSON.stringify(payload);
+         event.dataTransfer.effectAllowed = 'move';
+         event.dataTransfer.setData('application/json', serialized);
+         event.dataTransfer.setData('text/plain', serialized);
+      }
+      dragSourceRef.current = payload;
+      setDragSource(payload);
+      setDragTarget(null);
+   };
+
+   const handleDragEnter = (matchIndex: number, color: TeamColor) => {
+      if (!dragSource) return;
+      if (dragSource.matchIndex === matchIndex && dragSource.color === color) return;
+      setDragTarget({ matchIndex, color });
+   };
+
+   const handleDragOver = (event: React.DragEvent<HTMLTableCellElement>) => {
+      if (!dragSourceRef.current) return;
+      event.preventDefault();
+   };
+
+   const handleDrop = (event: React.DragEvent<HTMLTableCellElement>, matchIndex: number, color: TeamColor) => {
+      event.preventDefault();
+      let activeSource = dragSourceRef.current;
+      if (!activeSource && event.dataTransfer) {
+         const data = event.dataTransfer.getData('application/json') || event.dataTransfer.getData('text/plain');
+         if (data) {
+            try {
+               activeSource = JSON.parse(data);
+            } catch {
+               activeSource = null;
+            }
+         }
+      }
+      if (!activeSource) return;
+      if (activeSource.matchIndex === matchIndex && activeSource.color === color) {
+         dragSourceRef.current = null;
+         setDragSource(null);
+         setDragTarget(null);
+         return;
+      }
+      transferPlayers(activeSource, { matchIndex, color });
+      dragSourceRef.current = null;
+      setDragSource(null);
+      setDragTarget(null);
+   };
+
+   const handleDragEnd = () => {
+      dragSourceRef.current = null;
+      setDragSource(null);
+      setDragTarget(null);
+   };
+
+   const handleDragLeave = (event: React.DragEvent<HTMLTableCellElement>, matchIndex: number, color: TeamColor) => {
+      if (!dragTarget) return;
+      const related = event.relatedTarget as Node | null;
+      if (related && event.currentTarget.contains(related)) return;
+      if (dragTarget.matchIndex === matchIndex && dragTarget.color === color) {
+         setDragTarget(null);
+      }
+   };
+
    const handleExportResults = () => {
-      downloadData(teams, `squid-results-${new Date().toISOString().slice(0, 10)}.json`);
+      const exportData = { teams, matchups };
+      downloadData(exportData, `squid-results-${new Date().toISOString().slice(0, 10)}.json`);
+   };
+
+   const handleLoadResults = (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+         const content = e.target?.result as string;
+         try {
+            const data = JSON.parse(content);
+            
+            // Handle both old format (direct array) and new format (object with teams and matchups)
+            const loadedTeams = Array.isArray(data) ? data : data.teams;
+            const loadedMatchups = data.matchups || [];
+
+            // If a callback is provided, use it to fully reload teams (preferred approach)
+            if (onLoadResults) {
+               onLoadResults(loadedTeams, loadedMatchups);
+            } else {
+               // Fallback: Update all team scores incrementally
+               loadedTeams.forEach((loadedTeam: Team) => {
+                  const currentTeam = teams.find(t => t.color === loadedTeam.color);
+                  if (currentTeam) {
+                     const scoreDelta = (loadedTeam.score || 0) - (currentTeam.score || 0);
+                     if (scoreDelta !== 0) {
+                        updateTeamScore(loadedTeam.color, scoreDelta);
+                     }
+                     // Update individual player scores
+                     (loadedTeam.members || []).forEach((loadedMember) => {
+                        const currentMember = currentTeam.members.find(m => m.id === loadedMember.id);
+                        if (currentMember) {
+                           const playerScoreDelta = (loadedMember.score || 0) - (currentMember.score || 0);
+                           if (playerScoreDelta !== 0) {
+                              updatePlayerScore(loadedTeam.color, loadedMember.id, playerScoreDelta);
+                           }
+                        }
+                     });
+                  }
+               });
+            }
+
+            // Optionally restore matchups if available
+            if (loadedMatchups.length > 0) {
+               localStorage.setItem('squid-matchups-data', JSON.stringify(loadedMatchups));
+            }
+
+            alert('Results loaded successfully!' + (loadedMatchups.length > 0 ? ' Match order restored.' : ''));
+         } catch (error) {
+            alert('Failed to load results. Invalid file format.');
+            console.error(error);
+         }
+      };
+      reader.readAsText(file);
+      if (fileInputRef.current) fileInputRef.current.value = '';
    };
 
    const scoreboardWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -253,6 +536,8 @@ export const ResultsPhase: React.FC<{
       ? teams.find(t => t.color === activePad.teamColor)?.members.find(m => m.id === activePad.playerId) || null
       : null;
 
+   const displayedMatchups = isEditingMatchOrder ? draftMatchups : matchups;
+
   return (
       <div className="relative w-full max-w-7xl mx-auto p-4 md:p-6 animate-fade-in pb-20 mt-8">
       
@@ -264,7 +549,7 @@ export const ResultsPhase: React.FC<{
          >
             <div
                ref={scoreboardContentRef}
-               className={`${isScoreboardPinned ? 'fixed left-1/2 -translate-x-1/2 w-full max-w-7xl px-4 md:px-6 z-40' : '-mx-4 md:-mx-6 px-4 md:px-6'} pt-6 pb-4 bg-squid-dark/95 backdrop-blur border-b border-white/10 shadow-[0_15px_25px_rgba(0,0,0,0.6)]`}
+               className={`${isScoreboardPinned ? 'fixed left-1/2 -translate-x-1/2 w-full max-w-7xl px-4 md:px-6 z-40 backdrop-blur-md' : '-mx-4 md:-mx-6 px-4 md:px-6'} pt-6 pb-4`}
                style={isScoreboardPinned ? { top: `${PIN_OFFSET}px` } : undefined}
             >
                <Scoreboard teams={teams} condensed={isScoreboardPinned} />
@@ -278,16 +563,58 @@ export const ResultsPhase: React.FC<{
                    RAFFLE SYSTEM
                 </Button>
            {/* Actions Toolbar */}
+           <input 
+              type="file" 
+              ref={fileInputRef} 
+              className="hidden" 
+              accept=".json"
+              onChange={handleLoadResults}
+           />
+           <Button onClick={() => fileInputRef.current?.click()} variant="secondary" className="px-4 py-2 text-xs">LOAD RESULTS</Button>
            <Button onClick={handleExportResults} variant="secondary" className="px-4 py-2 text-xs">EXPORT RESULTS</Button>
         </div>
       </div>
 
       {/* INLINE MATCHUPS TABLE (Always Visible) */}
-      <div className="mb-12 relative z-10 animate-slide-up">
+        <div className="mb-12 relative z-10 animate-slide-up">
            <div className="bg-squid-card border-x border-t border-gray-800 p-2 flex justify-between items-center bg-gray-900/50">
                <span className="text-xs font-mono text-squid-pink tracking-widest uppercase">MATCH ORDER</span>
-               <span className="text-[10px] text-gray-500 font-mono">{matchups.length} ROUNDS</span>
+               <div className="flex items-center gap-2 text-[10px] text-gray-500 font-mono">
+                  <span>{displayedMatchups.length} ROUNDS</span>
+                  {!isEditingMatchOrder && (
+                     <button
+                        onClick={startMatchOrderEdit}
+                        className="px-2 py-0.5 border border-gray-700 text-gray-300 hover:text-white hover:border-squid-pink transition-colors rounded-sm"
+                     >
+                        EDIT
+                     </button>
+                  )}
+                  {isEditingMatchOrder && (
+                     <>
+                        <button
+                           onClick={handleSaveMatchOrder}
+                           className="px-2 py-0.5 border border-squid-pink text-squid-pink hover:bg-squid-pink hover:text-black transition-colors rounded-sm"
+                        >
+                           SAVE
+                        </button>
+                        <button
+                           onClick={cancelMatchOrderEdit}
+                           className="px-2 py-0.5 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors rounded-sm"
+                        >
+                           CANCEL
+                        </button>
+                     </>
+                  )}
+               </div>
            </div>
+           {isEditingMatchOrder && (
+              <div className="border-x border-b border-gray-800 bg-black/60 p-3 flex flex-col gap-2 text-[11px] text-gray-400">
+                  <span className="font-mono uppercase tracking-widest text-squid-pink">Edit Mode</span>
+                  <span className="text-[10px]">
+                     Use the arrows to move rounds, then drag and drop player chips between slots to match the official order. Dropping a name into a different color will move that player to the new team once you save.
+                  </span>
+              </div>
+           )}
            <div className="overflow-x-auto border-b border-gray-800 bg-black/40 custom-scrollbar">
               <table className="w-full min-w-[800px] border-collapse">
                  <thead>
@@ -301,24 +628,75 @@ export const ResultsPhase: React.FC<{
                     </tr>
                  </thead>
                  <tbody>
-                    {matchups.map((m, idx) => (
+                    {displayedMatchups.map((m, idx) => (
                        <tr key={m.id} className={`hover:bg-white/5 transition-colors ${idx % 2 === 0 ? 'bg-white/[0.02]' : ''}`}>
-                          <td className="p-3 border-r border-gray-800/50 text-center font-mono text-squid-pink font-bold text-xs">{m.id}</td>
+                          <td className="p-3 border-r border-gray-800/50 text-center font-mono text-squid-pink font-bold text-xs">
+                             <div className="flex items-center justify-center gap-2">
+                                <span>{m.id}</span>
+                                {isEditingMatchOrder && (
+                                   <div className="flex flex-col gap-0.5 text-gray-400">
+                                      <button
+                                         onClick={() => moveMatchupRow(idx, 'up')}
+                                         disabled={idx === 0}
+                                         className="px-1 text-[10px] border border-gray-700 rounded-sm disabled:opacity-30"
+                                         aria-label={`Move round ${m.id} up`}
+                                      >
+                                         ↑
+                                      </button>
+                                      <button
+                                         onClick={() => moveMatchupRow(idx, 'down')}
+                                         disabled={idx === displayedMatchups.length - 1}
+                                         className="px-1 text-[10px] border border-gray-700 rounded-sm disabled:opacity-30"
+                                         aria-label={`Move round ${m.id} down`}
+                                      >
+                                         ↓
+                                      </button>
+                                   </div>
+                                )}
+                             </div>
+                          </td>
                           {Object.values(TeamColor).map(c => {
-                             const player = m.players.find(p => p.color === c)?.player;
+                              const player = m.players.find(p => p.color === c)?.player;
+                              const isDragOrigin = dragSource && dragSource.matchIndex === idx && dragSource.color === c;
+                              const isDragHover = dragTarget && dragTarget.matchIndex === idx && dragTarget.color === c;
                              return (
-                                <td key={c} className="p-3 border-r border-gray-800/50 text-center">
-                                   {player ? (
-                                      <div className="flex flex-col items-center gap-1">
-                                         <span className="font-mono text-xs text-gray-300 block truncate px-2 w-full">
-                                            {player.name}
+                                   <td
+                                      key={c}
+                                      className={`p-3 border-r border-gray-800/50 text-center ${isDragHover ? 'bg-white/10' : ''}`}
+                                      onDragOver={isEditingMatchOrder ? handleDragOver : undefined}
+                                      onDragEnter={isEditingMatchOrder ? () => handleDragEnter(idx, c) : undefined}
+                                      onDragLeave={isEditingMatchOrder ? (e) => handleDragLeave(e, idx, c) : undefined}
+                                      onDrop={isEditingMatchOrder ? (e) => handleDrop(e, idx, c) : undefined}
+                                   >
+                                   {isEditingMatchOrder ? (
+                                      <div
+                                         className={`flex flex-col items-center gap-1 rounded border border-dashed ${isDragOrigin ? 'border-squid-pink' : 'border-gray-700/60'} ${player ? 'bg-black/60' : 'bg-transparent'} px-2 py-2`}
+                                         draggable={Boolean(player)}
+                                         onDragStart={player ? (e) => handleDragStart(e, idx, c) : undefined}
+                                         onDragEnd={player ? handleDragEnd : undefined}
+                                      >
+                                         <span className={`text-[11px] font-mono uppercase tracking-wide ${player ? 'text-gray-100' : 'text-gray-600'}`}>
+                                            {player ? player.name : '(empty)'}
                                          </span>
-                                         <span className={`text-[10px] px-1.5 py-0.5 rounded ${player.gender === 'M' ? 'bg-blue-900/50 text-blue-300' : player.gender === 'F' ? 'bg-pink-900/50 text-pink-300' : 'bg-purple-900/50 text-purple-300'}`}>
-                                            {player.gender === 'M' ? '♂ M' : player.gender === 'F' ? '♀ F' : '⊕ NB'}
-                                         </span>
+                                         {player && (
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded text-center ${player.gender === 'M' ? 'bg-blue-900/50 text-blue-300' : player.gender === 'F' ? 'bg-pink-900/50 text-pink-300' : 'bg-purple-900/50 text-purple-300'}`}>
+                                               {player.gender === 'M' ? '♂ M' : player.gender === 'F' ? '♀ F' : '⊕ NB'}
+                                            </span>
+                                         )}
                                       </div>
                                    ) : (
-                                      <span className="text-gray-800 text-xs">-</span>
+                                      player ? (
+                                         <div className="flex flex-col items-center gap-1">
+                                            <span className="font-mono text-xs text-gray-300 block truncate px-2 w-full">
+                                               {player.name}
+                                            </span>
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${player.gender === 'M' ? 'bg-blue-900/50 text-blue-300' : player.gender === 'F' ? 'bg-pink-900/50 text-pink-300' : 'bg-purple-900/50 text-purple-300'}`}>
+                                               {player.gender === 'M' ? '♂ M' : player.gender === 'F' ? '♀ F' : '⊕ NB'}
+                                            </span>
+                                         </div>
+                                      ) : (
+                                         <span className="text-gray-800 text-xs">-</span>
+                                      )
                                    )}
                                 </td>
                              );

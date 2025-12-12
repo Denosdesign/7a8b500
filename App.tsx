@@ -12,6 +12,17 @@ import startTheme from './assets/start_theme.mp3';
 import scoreboardMusic from './assets/scoreboard.mp3';
 import bgMusic from './assets/background.mp3';
 
+// In your App.tsx or main entry
+const APP_VERSION = '1.0.3';
+const STORED_VERSION = localStorage.getItem('app-version');
+
+if (STORED_VERSION !== APP_VERSION) {
+  // Clear old data
+  localStorage.clear();
+  sessionStorage.clear();
+  localStorage.setItem('app-version', APP_VERSION);
+}
+
 const LOCAL_STORAGE_TEAMS = 'squid-teams-data';
 const LOCAL_STORAGE_MATCHUPS = 'squid-matchups-data';
 const LOCAL_STORAGE_STATE = 'squid-app-state';
@@ -137,6 +148,30 @@ const App: React.FC = () => {
   const generateMatchups = (currentTeams: Team[]): Matchup[] => {
     const shuffleArray = <T,>(arr: T[]): T[] => [...arr].sort(() => Math.random() - 0.5);
 
+    // "0" marked players (noGenderRestriction) used to be fully flexible.
+    // New rule: the FIRST "0" marked player becomes the Game 1 anchor:
+    // - Game 1 starts with that player's gender (e.g. Female-first)
+    // - That player is pinned into Game 1 for their team
+    // - Other "0" marked players still fill gaps, but only within their own gender rows
+    const findGame1Anchor = (): Player | null => {
+      for (const color of Object.values(TeamColor)) {
+        const team = currentTeams.find(t => t.color === color);
+        const found = team?.members?.find(m => m.noGenderRestriction);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    type RowGenderKey = 'male' | 'female' | 'nonBinary';
+    const toRowGenderKey = (gender: Gender): RowGenderKey => {
+      if (gender === Gender.Male) return 'male';
+      if (gender === Gender.Female) return 'female';
+      return 'nonBinary';
+    };
+
+    const game1Anchor = findGame1Anchor();
+    const game1Gender: RowGenderKey | null = game1Anchor ? toRowGenderKey(game1Anchor.gender) : null;
+
     type HelperBucket = 'early' | 'late';
     type HelperInfo = {
       player: Player;
@@ -144,10 +179,56 @@ const App: React.FC = () => {
       totalPlayers: number;
     };
 
-    const HELPER_BUCKET_CONFIG: Record<Gender, { earlyIndex: number | null; lateIndex: number | null }> = {
-      [Gender.Male]: { earlyIndex: 0, lateIndex: 2 },
-      [Gender.Female]: { earlyIndex: 0, lateIndex: 1 },
-      [Gender.NonBinary]: { earlyIndex: null, lateIndex: null }
+    const getHelperBaseSlotConfig = (gender: Gender): { earlyIndex: number | null; lateIndex: number | null } => {
+      if (gender === Gender.NonBinary) return { earlyIndex: null, lateIndex: null };
+
+      const isStartGender = Boolean(game1Anchor && game1Anchor.gender === gender);
+
+      // Target helper games:
+      // - Special Game 01 helper is pinned to index 0 for the start gender.
+      // - For the start gender, DO NOT place additional helpers at index 1 (Game 3).
+      //   They should go to the late slot (index 2 => Game 5) to keep Game 3 balanced.
+      // - For the other gender, helpers can be early (index 0 => Game 2) and late (index 2 => Game 6).
+      if (game1Anchor && isStartGender) return { earlyIndex: null, lateIndex: 2 };
+      return { earlyIndex: 0, lateIndex: 2 };
+    };
+
+    const getHelperSlotConfig = (
+      gender: Gender,
+      totalPlayers: number
+    ): { earlyIndex: number | null; lateIndex: number | null } => {
+      const base = getHelperBaseSlotConfig(gender);
+      if (base.earlyIndex === null && base.lateIndex === null) {
+        return { earlyIndex: null, lateIndex: null };
+      }
+
+      const earlyIndex = totalPlayers > 0 && base.earlyIndex !== null && base.earlyIndex < totalPlayers ? base.earlyIndex : null;
+
+      // Make "late" usable even for smaller teams:
+      // - clamp to last index (e.g. base lateIndex=2, team has 2 players => lateIndex becomes 1)
+      // - never equal earlyIndex
+      let lateIndex: number | null = null;
+      if (base.lateIndex !== null && totalPlayers >= 2) {
+        lateIndex = Math.min(base.lateIndex, totalPlayers - 1);
+        if (earlyIndex !== null && lateIndex === earlyIndex) {
+          // For the start gender when a Game 01 helper is pinned at index 0,
+          // never force "late" into index 0 just to avoid a collision.
+          const isStartGender = Boolean(game1Anchor && game1Anchor.gender === gender);
+          if (game1Anchor && isStartGender) {
+            lateIndex = null;
+          } else {
+            lateIndex = totalPlayers >= 2 ? (earlyIndex === 0 ? 1 : 0) : null;
+          }
+        }
+
+        // Same guard: don't push a helper into Game 01 for the start gender.
+        const isStartGender = Boolean(game1Anchor && game1Anchor.gender === gender);
+        if (game1Anchor && isStartGender && lateIndex === 0) {
+          lateIndex = null;
+        }
+      }
+
+      return { earlyIndex, lateIndex };
     };
 
     const helperBucketAssignments: Partial<Record<string, HelperBucket>> = {};
@@ -155,6 +236,19 @@ const App: React.FC = () => {
       [Gender.Male]: [],
       [Gender.Female]: [],
       [Gender.NonBinary]: []
+    };
+
+    const pickGame1HelperId = (gender: Gender): string | null => {
+      const infos = helperInfosByGender[gender];
+      if (!infos.length) return null;
+      const best = [...infos]
+        .sort((a, b) => {
+          const firstChar = (name: string) => (name.trim().charAt(0).toUpperCase() || '\u0000');
+          const byFirst = firstChar(b.player.name).localeCompare(firstChar(a.player.name), undefined, { sensitivity: 'base' });
+          if (byFirst !== 0) return byFirst;
+          return b.player.name.localeCompare(a.player.name, undefined, { sensitivity: 'base' });
+        })[0];
+      return best?.player.id ?? null;
     };
 
     const initGenderCount = () => ({
@@ -181,18 +275,42 @@ const App: React.FC = () => {
       flexible: Player[];
     }>;
 
+    const lockedFirstByTeamAndGender: Record<TeamColor, Partial<Record<Gender, Player>>> = {} as Record<
+      TeamColor,
+      Partial<Record<Gender, Player>>
+    >;
+
     const genderCountsByTeam: Record<TeamColor, Record<Gender, number>> = {} as Record<TeamColor, Record<Gender, number>>;
 
     Object.values(TeamColor).forEach(color => {
       const team = currentTeams.find(t => t.color === color);
       const members = team ? [...team.members] : [];
 
-      const flexible = members.filter(m => m.noGenderRestriction);
-      const genderSpecific = members.filter(m => !m.noGenderRestriction);
+      lockedFirstByTeamAndGender[color] = {};
 
-      const males = genderSpecific.filter(m => m.gender === Gender.Male);
-      const females = genderSpecific.filter(m => m.gender === Gender.Female);
-      const nonBinary = genderSpecific.filter(m => m.gender === Gender.NonBinary);
+      const isAnchor = (player: Player) => Boolean(game1Anchor && player.id === game1Anchor.id);
+
+      // Anchor is treated as gender-specific (so it follows its gender) and pinned to Game 1.
+      // Other noGenderRestriction players remain flexible, but will only fill same-gender rows later.
+      const flexible = members.filter(m => m.noGenderRestriction && !isAnchor(m));
+      const genderSpecific = members.filter(m => !m.noGenderRestriction || isAnchor(m));
+
+      const malesAll = genderSpecific.filter(m => m.gender === Gender.Male);
+      const femalesAll = genderSpecific.filter(m => m.gender === Gender.Female);
+      const nonBinaryAll = genderSpecific.filter(m => m.gender === Gender.NonBinary);
+
+      const lockedMale = malesAll.find(isAnchor);
+      const lockedFemale = femalesAll.find(isAnchor);
+      const lockedNonBinary = nonBinaryAll.find(isAnchor);
+
+      if (lockedMale) lockedFirstByTeamAndGender[color][Gender.Male] = lockedMale;
+      if (lockedFemale) lockedFirstByTeamAndGender[color][Gender.Female] = lockedFemale;
+      if (lockedNonBinary) lockedFirstByTeamAndGender[color][Gender.NonBinary] = lockedNonBinary;
+
+      // Remove locked player from the pool that gets shuffled/ordered; we'll prepend it back later.
+      const males = lockedMale ? malesAll.filter(p => p.id !== lockedMale.id) : malesAll;
+      const females = lockedFemale ? femalesAll.filter(p => p.id !== lockedFemale.id) : femalesAll;
+      const nonBinary = lockedNonBinary ? nonBinaryAll.filter(p => p.id !== lockedNonBinary.id) : nonBinaryAll;
 
       pendingPools[color] = {
         males,
@@ -202,71 +320,112 @@ const App: React.FC = () => {
       };
 
       const counts = initGenderCount();
-      counts[Gender.Male] = males.length;
-      counts[Gender.Female] = females.length;
-      counts[Gender.NonBinary] = nonBinary.length;
+      counts[Gender.Male] = malesAll.length;
+      counts[Gender.Female] = femalesAll.length;
+      counts[Gender.NonBinary] = nonBinaryAll.length;
       genderCountsByTeam[color] = counts;
 
-      males.forEach(player => {
+      malesAll.forEach(player => {
         if (player.isHelper) {
-          helperInfosByGender[Gender.Male].push({ player, teamColor: color, totalPlayers: males.length });
+          if (isAnchor(player)) return;
+          helperInfosByGender[Gender.Male].push({ player, teamColor: color, totalPlayers: malesAll.length });
         }
       });
 
-      females.forEach(player => {
+      femalesAll.forEach(player => {
         if (player.isHelper) {
-          helperInfosByGender[Gender.Female].push({ player, teamColor: color, totalPlayers: females.length });
+          if (isAnchor(player)) return;
+          helperInfosByGender[Gender.Female].push({ player, teamColor: color, totalPlayers: femalesAll.length });
         }
       });
 
-      nonBinary.forEach(player => {
+      nonBinaryAll.forEach(player => {
         if (player.isHelper) {
-          helperInfosByGender[Gender.NonBinary].push({ player, teamColor: color, totalPlayers: nonBinary.length });
+          if (isAnchor(player)) return;
+          helperInfosByGender[Gender.NonBinary].push({ player, teamColor: color, totalPlayers: nonBinaryAll.length });
         }
       });
     });
 
+    // When a "0" anchor exists, pick EXACTLY ONE Game 01 helper (global, not per team)
+    // by first character Z→A (tie-breaker: full name), and exclude it from balancing.
+    const game1HelperId: string | null = game1Anchor ? pickGame1HelperId(game1Anchor.gender) : null;
+
     Object.values(TeamColor).forEach(color => {
       const counts = genderCountsByTeam[color];
       ([Gender.Male, Gender.Female, Gender.NonBinary] as Gender[]).forEach(gender => {
-        const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
-        if (earlyIndex !== null && counts[gender] > earlyIndex) {
+        const { earlyIndex, lateIndex } = getHelperSlotConfig(gender, counts[gender]);
+        if (earlyIndex !== null) {
           helperBucketCapacities[gender].early += 1;
         }
-        if (lateIndex !== null && counts[gender] > lateIndex) {
+        if (lateIndex !== null) {
           helperBucketCapacities[gender].late += 1;
         }
       });
     });
 
     const assignBucketsForGender = (gender: Gender) => {
-      const infos = helperInfosByGender[gender];
+      const infos = helperInfosByGender[gender].filter(info => info.player.id !== game1HelperId);
       if (!infos.length) return;
 
-      const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
       const capacities = helperBucketCapacities[gender];
       const randomized = shuffleArray(infos);
       let lateAssigned = 0;
 
-      if (lateIndex !== null && capacities.late > 0) {
-        const lateEligible = randomized.filter(info => info.totalPlayers - 1 >= lateIndex);
+      const usedLateTeams = new Set<TeamColor>();
+      const usedEarlyTeams = new Set<TeamColor>();
+
+      const isStartGender = Boolean(game1Anchor && game1Anchor.gender === gender);
+
+      // If Game 1 starts with this gender, keep the remaining helpers out of the "early" slot
+      // (which would otherwise land in Game 3 for that gender row). Put them into the late slot.
+      if (game1Anchor && isStartGender) {
+        if (capacities.late > 0) {
+          const lateEligible = randomized.filter(info => getHelperSlotConfig(gender, info.totalPlayers).lateIndex !== null);
+          const lateTarget = Math.min(infos.length, capacities.late, lateEligible.length);
+          if (lateTarget > 0) {
+            const shuffledEligible = shuffleArray(lateEligible);
+            let picked = 0;
+            for (const info of shuffledEligible) {
+              if (picked >= lateTarget) break;
+              if (usedLateTeams.has(info.teamColor)) continue;
+              helperBucketAssignments[info.player.id] = 'late';
+              usedLateTeams.add(info.teamColor);
+              picked++;
+            }
+          }
+        }
+        return;
+      }
+
+      if (capacities.late > 0) {
+        const lateEligible = randomized.filter(info => getHelperSlotConfig(gender, info.totalPlayers).lateIndex !== null);
         const lateTarget = Math.min(Math.floor(infos.length / 2), capacities.late, lateEligible.length);
         if (lateTarget > 0) {
-          shuffleArray(lateEligible)
-            .slice(0, lateTarget)
-            .forEach(info => {
-              helperBucketAssignments[info.player.id] = 'late';
-            });
+          const shuffledEligible = shuffleArray(lateEligible);
+          let picked = 0;
+          for (const info of shuffledEligible) {
+            if (picked >= lateTarget) break;
+            if (usedLateTeams.has(info.teamColor)) continue;
+            helperBucketAssignments[info.player.id] = 'late';
+            usedLateTeams.add(info.teamColor);
+            picked++;
+          }
           lateAssigned = lateTarget;
         }
       }
 
-      if (earlyIndex !== null && capacities.early > 0) {
-        const remaining = randomized.filter(info => !helperBucketAssignments[info.player.id]);
+      if (capacities.early > 0) {
+        const remaining = randomized.filter(info => {
+          if (helperBucketAssignments[info.player.id]) return false;
+          if (usedEarlyTeams.has(info.teamColor)) return false;
+          return getHelperSlotConfig(gender, info.totalPlayers).earlyIndex !== null;
+        });
         const desiredEarly = Math.min(infos.length - lateAssigned, capacities.early, remaining.length);
         if (desiredEarly > 0) {
           remaining.slice(0, desiredEarly).forEach(info => {
             helperBucketAssignments[info.player.id] = 'early';
+            usedEarlyTeams.add(info.teamColor);
           });
         }
       }
@@ -277,7 +436,7 @@ const App: React.FC = () => {
 
     const buildOrderedList = (players: Player[], gender: Gender) => {
       if (players.length === 0) return [];
-      const { earlyIndex, lateIndex } = HELPER_BUCKET_CONFIG[gender];
+      const { earlyIndex, lateIndex } = getHelperSlotConfig(gender, players.length);
 
       if (earlyIndex === null && lateIndex === null) {
         return shuffleArray(players);
@@ -297,50 +456,46 @@ const App: React.FC = () => {
         }
       });
 
-      // Assign helpers to early/late buckets
-      let earlyCount = 0;
-      let lateCount = 0;
-      helpers.forEach(helper => {
-        const bucket = helperBucketAssignments[helper.id];
-        if (bucket === 'early' && earlyIndex !== null) {
-          earlyQueue.push(helper);
-          earlyCount++;
-        } else if (bucket === 'late' && lateIndex !== null) {
-          lateQueue.push(helper);
-          lateCount++;
-        } else if (earlyIndex !== null && earlyCount < (helpers.length - lateCount)) {
-          // Distribute unassigned helpers to early
-          earlyQueue.push(helper);
-          earlyCount++;
-        } else if (lateIndex !== null && lateCount < helpers.length) {
-          // Distribute remaining to late
-          lateQueue.push(helper);
-          lateCount++;
-        }
-      });
+      // Decide which helpers (at most one each) get early/late.
+      // Special rule: when a "0" anchor exists, ONLY ONE helper globally is pinned into Game 01.
+      const isStartGender = Boolean(game1Anchor && game1Anchor.gender === gender);
+      const game1Pick = isStartGender && game1HelperId ? helpers.find(h => h.id === game1HelperId) : undefined;
 
-      const ordered: Player[] = [];
+      const helpersForBuckets = game1Pick ? helpers.filter(h => h.id !== game1Pick.id) : helpers;
+
+      const bucketedEarly = helpersForBuckets.filter(h => helperBucketAssignments[h.id] === 'early');
+      const bucketedLate = helpersForBuckets.filter(h => helperBucketAssignments[h.id] === 'late');
+
+      const earlyPick = earlyIndex !== null ? bucketedEarly[0] : undefined;
+      const latePick = lateIndex !== null ? bucketedLate.find(h => h.id !== earlyPick?.id) : undefined;
+
+      const spilloverHelpers = helpersForBuckets.filter(h => h.id !== earlyPick?.id && h.id !== latePick?.id);
+
+      // For the start gender (when Game 01 is pinned), keep helpers out of index 1 (Game 3)
+      // by filling regulars first.
+      const remainingPool = isStartGender
+        ? [...shuffleArray(regulars), ...shuffleArray(spilloverHelpers)]
+        : shuffleArray([...regulars, ...spilloverHelpers]);
+
+      const ordered: Player[] = new Array(shuffled.length);
       for (let idx = 0; idx < shuffled.length; idx++) {
-        let selected: Player | undefined;
-
-        if (earlyIndex !== null && idx === earlyIndex && earlyQueue.length) {
-          selected = earlyQueue.shift();
-        } else if (lateIndex !== null && idx === lateIndex && lateQueue.length) {
-          selected = lateQueue.shift();
+        if (game1Pick && idx === 0) {
+          ordered[idx] = game1Pick;
+          continue;
         }
-
-        if (!selected) {
-          // Fill remaining slots with non-helpers only (no helpers outside 1,2,4,5)
-          selected = regulars.shift();
+        if (earlyIndex !== null && idx === earlyIndex && earlyPick) {
+          ordered[idx] = earlyPick;
+          continue;
         }
-
-        if (selected) {
-          ordered.push(selected);
+        if (lateIndex !== null && idx === lateIndex && latePick) {
+          ordered[idx] = latePick;
+          continue;
         }
+        const next = remainingPool.shift();
+        if (next) ordered[idx] = next;
       }
 
-      // Ensure no helpers overflow — they only exist in earlyIndex and lateIndex positions
-      return ordered;
+      return ordered.filter(Boolean);
     };
 
     type TeamPool = {
@@ -355,11 +510,17 @@ const App: React.FC = () => {
 
     Object.values(TeamColor).forEach(color => {
       const pending = pendingPools[color];
+      const locked = lockedFirstByTeamAndGender[color];
+
+      const orderedMalesBase = buildOrderedList(pending.males, Gender.Male);
+      const orderedFemalesBase = buildOrderedList(pending.females, Gender.Female);
+      const orderedNonBinaryBase = buildOrderedList(pending.nonBinary, Gender.NonBinary);
+
       poolsByColor[color] = {
         color,
-        males: buildOrderedList(pending.males, Gender.Male),
-        females: buildOrderedList(pending.females, Gender.Female),
-        nonBinary: buildOrderedList(pending.nonBinary, Gender.NonBinary),
+        males: locked?.[Gender.Male] ? [locked[Gender.Male]!, ...orderedMalesBase] : orderedMalesBase,
+        females: locked?.[Gender.Female] ? [locked[Gender.Female]!, ...orderedFemalesBase] : orderedFemalesBase,
+        nonBinary: locked?.[Gender.NonBinary] ? [locked[Gender.NonBinary]!, ...orderedNonBinaryBase] : orderedNonBinaryBase,
         flexible: shuffleArray(pending.flexible)
       };
     });
@@ -387,7 +548,9 @@ const App: React.FC = () => {
     let maleRowIndex = 0;
     let femaleRowIndex = 0;
     let nonBinaryRowIndex = 0;
-    let preferMale = true;
+    // Start Game 1 with the anchor's gender (Female-first if anchor is female).
+    // If no anchor exists, keep the historical default (Male-first).
+    let preferMale = game1Gender ? game1Gender === 'male' : true;
 
     // Track used flexible players per team (mutable arrays for shifting)
     const flexibleQueues: Record<TeamColor, Player[]> = {} as Record<TeamColor, Player[]>;
@@ -406,10 +569,16 @@ const App: React.FC = () => {
         return genderArray[currentIndex];
       }
       
-      // No gender-specific player available - try to use a flexible player to fill the gap
+      // No gender-specific player available - try to use a flexible player to fill the gap,
+      // but ONLY if the flexible player's own gender matches this row.
       const flexQueue = flexibleQueues[pool.color];
-      if (flexQueue.length > 0) {
-        return flexQueue.shift()!; // Use and remove from queue
+
+      const desiredGender =
+        gender === 'male' ? Gender.Male : gender === 'female' ? Gender.Female : Gender.NonBinary;
+      const matchingIndex = flexQueue.findIndex(p => p.gender === desiredGender);
+      if (matchingIndex >= 0) {
+        const picked = flexQueue.splice(matchingIndex, 1);
+        return picked[0] ?? null;
       }
       
       return null;
@@ -419,6 +588,19 @@ const App: React.FC = () => {
     const totalMaleRows = maxCounts.maxMales;
     const totalFemaleRows = maxCounts.maxFemales;
     const totalNonBinaryRows = maxCounts.maxNonBinary;
+
+    // If the anchor is NonBinary, force Game 1 to be the NonBinary row (if any rows exist).
+    if (game1Gender === 'nonBinary' && nonBinaryRowIndex < totalNonBinaryRows) {
+      const rowPlayers: MatchupPlayer[] = [];
+      Object.values(TeamColor).forEach(color => {
+        const pool = poolsByColor[color];
+        rowPlayers.push({ color, player: getNextPlayer(pool, 'nonBinary', nonBinaryRowIndex) });
+      });
+      nonBinaryRowIndex++;
+      if (rowPlayers.some(entry => entry.player)) {
+        matchups.push({ id: matchups.length + 1, players: rowPlayers });
+      }
+    }
 
     while (
       maleRowIndex < totalMaleRows ||
@@ -521,11 +703,23 @@ const App: React.FC = () => {
     localStorage.removeItem(LOCAL_STORAGE_STATE);
   };
 
-  const handleImportResults = (importedTeams: Team[]) => {
+  const handleImportResults = (importedTeams: Team[], importedMatchups?: Matchup[]) => {
     // Ensure score field exists on import
     const sanitized = importedTeams.map(t => ({ ...t, score: t.score || 0, members: t.members.map(m => ({...m, score: m.score || 0})) }));
     setTeams(sanitized);
+    if (importedMatchups && importedMatchups.length > 0) {
+      setMatchups(importedMatchups);
+    }
     setAppState(AppState.Results);
+  };
+
+  const handleLoadResultsInScoreboard = (loadedTeams: Team[], loadedMatchups: Matchup[]) => {
+    // Fully replace teams and matchups when loading from scoreboard
+    const sanitized = loadedTeams.map(t => ({ ...t, score: t.score || 0, members: t.members.map(m => ({...m, score: m.score || 0})) }));
+    setTeams(sanitized);
+    if (loadedMatchups && loadedMatchups.length > 0) {
+      setMatchups(loadedMatchups);
+    }
   };
 
   // --- Matchup Generation & View ---
@@ -545,6 +739,14 @@ const App: React.FC = () => {
       const newMatchups = generateMatchups(teams);
       setMatchups(newMatchups);
     }
+  };
+
+  const handleUpdateMatchups = (updatedMatchups: Matchup[]) => {
+    setMatchups(updatedMatchups);
+  };
+
+  const handleUpdateTeams = (updatedTeams: Team[]) => {
+    setTeams(updatedTeams);
   };
 
   const handleBackToHome = () => {
@@ -659,8 +861,7 @@ const App: React.FC = () => {
              <PlayingOrderPhase 
                 teams={teams} 
                 matchups={matchups} 
-                onProceed={handleProceedToScoreboard} 
-                onReroll={handleRegenerateOrder}
+                onProceed={handleProceedToScoreboard}
              />
           )}
           {appState === AppState.Results && (
@@ -672,6 +873,9 @@ const App: React.FC = () => {
               onOpenRaffle={handleOpenRaffle}
               updateTeamScore={updateTeamScore}
               updatePlayerScore={updatePlayerScore}
+              onLoadResults={handleLoadResultsInScoreboard}
+              onUpdateMatchups={handleUpdateMatchups}
+              onUpdateTeams={handleUpdateTeams}
             />
           )}
           {appState === AppState.Raffle && (

@@ -10,8 +10,7 @@ export const PlayingOrderPhase: React.FC<{
   teams: Team[]; 
   matchups: Matchup[];
   onProceed: () => void;
-  onReroll: () => void;
-}> = ({ teams, matchups, onProceed, onReroll }) => {
+}> = ({ teams, matchups, onProceed }) => {
   const [revealIndex, setRevealIndex] = useState(-1);
   const [rollingText, setRollingText] = useState<Record<string, string>>({});
   
@@ -93,14 +92,11 @@ export const PlayingOrderPhase: React.FC<{
   }, [teams]);
 
   const handleExportMatchups = () => {
-      downloadData(matchups, `squid-matchups-${new Date().toISOString().slice(0, 10)}.json`);
+      const exportData = { teams, matchups };
+      downloadData(exportData, `squid-results-${new Date().toISOString().slice(0, 10)}.json`);
   };
 
-  const handleReroll = () => {
-      // Reset reveal state for new animation
-      setRevealIndex(-1);
-      onReroll();
-  };
+
 
   return (
     <div className="w-full max-w-7xl mx-auto p-4 md:p-8 animate-fade-in pb-20 mt-12 flex flex-col items-center">
@@ -109,7 +105,6 @@ export const PlayingOrderPhase: React.FC<{
                 <span className="text-squid-pink mr-2">MATCH</span>  ORDER</h2>
             <div className="flex gap-4">
                  <Button onClick={handleExportMatchups} variant="secondary" className="text-xs py-2 px-4">DOWNLOAD</Button>
-                 <Button onClick={handleReroll} variant="secondary" className="text-xs py-2 px-4 hover:border-red-500 hover:text-red-500">REROLL</Button>
                  <Button onClick={onProceed} className="text-xs py-2 px-4 shadow-[0_0_15px_rgba(237,27,118,0.5)]">SCOREBOARD</Button>
             </div>
         </div>

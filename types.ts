@@ -14,13 +14,6 @@ export interface Player {
   isHelper?: boolean; // "H" marker - helper role prioritized for select games
 }
 
-export interface ParsedPlayerResponse {
-  players: {
-    name: string;
-    gender: 'M' | 'F' | 'NB';
-  }[];
-}
-
 export enum TeamColor {
   Red = 'Red',
   Blue = 'Blue',

@@ -13,7 +13,7 @@ export const InputPhase: React.FC<{
   players: Player[];
   setPlayers: React.Dispatch<React.SetStateAction<Player[]>>;
   onStart: () => void;
-  onImportResults: (teams: Team[]) => void;
+  onImportResults: (teams: Team[], matchups?: any[]) => void;
 }> = ({ players, setPlayers, onStart, onImportResults }) => {
   const [singleName, setSingleName] = useState('');
   const [singleGender, setSingleGender] = useState<Gender>(Gender.Male);
@@ -84,7 +84,15 @@ export const InputPhase: React.FC<{
         // Try parsing as JSON first
         const jsonData = JSON.parse(content);
         
-        // Check if it's a Results file (Array of Teams)
+        // Check if it's a new Results file (Object with teams and matchups)
+        if (jsonData && typeof jsonData === 'object' && !Array.isArray(jsonData) && 'teams' in jsonData && 'matchups' in jsonData) {
+          if (window.confirm("Game Results detected (with match order). Load results and skip lottery?")) {
+             onImportResults(jsonData.teams as Team[], jsonData.matchups as any[]);
+          }
+          return;
+        }
+
+        // Check if it's an old Results file (Array of Teams)
         if (Array.isArray(jsonData) && jsonData.length > 0 && 'color' in jsonData[0] && 'members' in jsonData[0]) {
           if (window.confirm("Game Results detected. Load results and skip lottery?")) {
              onImportResults(jsonData as Team[]);
@@ -155,6 +163,10 @@ export const InputPhase: React.FC<{
 
   return (
     <>
+      {/* Background Ambience (Same as LandingPage) */}
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 via-black to-black opacity-80"></div>
+      <div className="fixed inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-20 animate-pulse"></div>
+
       {/* Background Characters - Setup Phase Only */}
       <div className="fixed bottom-0 left-0 z-0 pointer-events-none hidden xl:block transition-opacity duration-1000 animate-fade-in">
          <img 
